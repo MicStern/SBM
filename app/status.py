@@ -16,7 +16,7 @@ class Status:
     fetch_errors: int = 0
     save_errors: int = 0
 
-    # neue Fehlerliste
+    # Fehlerpuffer (letzte N Fehler)
     error_logs: List[str] = field(default_factory=list)
 
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -30,11 +30,12 @@ class Status:
             setattr(self, attr, time())
 
     async def log_error(self, msg: str):
+        """Fehlermeldung merken (ring buffer)"""
         async with self._lock:
             self.error_logs.append(msg)
             if len(self.error_logs) > MAX_ERROR_LOGS:
                 self.error_logs = self.error_logs[-MAX_ERROR_LOGS:]
 
 
-# WICHTIG: globale Instanz, auf die main/fetcher/storage zugreifen
+# globale Instanz, auf die alle Module zugreifen
 status = Status()
