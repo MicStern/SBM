@@ -34,10 +34,8 @@
 
       <h2>Analyse</h2>
       <p class="muted">TBD</p>
-    </div>
-    
-    <h2>Fehler-Logs (letzte {{ s.error_logs|length }})</h2>
 
+      <h2>Fehler-Logs (letzte {{ s.error_logs|length }})</h2>
       {% if s.error_logs %}
       <div style="border:1px solid #ccc; padding:10px; max-height:250px; overflow-y:auto; white-space:pre-wrap; background:#fafafa;">
         {% for log in s.error_logs %}
@@ -47,6 +45,7 @@
       {% else %}
       <p class="muted">Keine Fehler bisher.</p>
       {% endif %}
+    </div>
 
     <div>
       <h2>Pakete (gruppiert: {{ packets|length }})</h2>
