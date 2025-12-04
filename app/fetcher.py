@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime, timedelta
 from typing import List
 
 import httpx
@@ -10,14 +9,22 @@ from .status import status
 
 
 def _build_auth_headers() -> dict:
-    """Optional: Bearer Token aus ENV"""
+    """
+    Optional: Bearer Token aus ENV (falls später benötigt).
+    Für Basic Auth nicht nötig.
+    """
     if settings.AUTH_TYPE.lower() == "bearer" and settings.AUTH_BEARER_TOKEN:
         return {"Authorization": f"Bearer {settings.AUTH_BEARER_TOKEN}"}
     return {}
 
 
 def _build_auth_tuple():
-    """Optional: Basic Auth aus ENV"""
+    """
+    Basic Auth aus ENV:
+    AUTH_TYPE=basic
+    AUTH_USERNAME=...
+    AUTH_PASSWORD=...
+    """
     if (
         settings.AUTH_TYPE.lower() == "basic"
         and settings.AUTH_USERNAME
@@ -27,48 +34,47 @@ def _build_auth_tuple():
     return None
 
 
-def _make_time_window() -> tuple[str, str]:
-    """
-    Erzeugt ein Zeitfenster:
-    end_date = jetzt
-    start_date = end_date - 2 * Poll-Intervall
-
-    Format wie dein API-Beispiel:
-    'YYYY-MM-DD HH:MM:SS'
-    """
-    now = datetime.now()
-    window = timedelta(seconds=settings.API_POLL_INTERVAL_SEC * 2)
-    end_dt = now
-    start_dt = now - window
-
-    fmt = "%Y-%m-%d %H:%M:%S"
-    start_str = start_dt.strftime(fmt)
-    end_str = end_dt.strftime(fmt)
-    return start_str, end_str
-
-
 async def fetch_once(client: httpx.AsyncClient) -> List[IncomingItem]:
     """
     Holt eine Liste deiner JSON-Objekte von der API.
     Erwartetes Format: Liste von Objekten mit 'info' + 'data'.
+
+    Testweise OHNE Query-Parameter: nur die Basis-URL.
     """
-    start_str, end_str = _make_time_window()
+    try:
+        resp = await client.get(str(settings.API_BASE_URL))
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # HTTP-Fehler (401, 403, 500, ...)
+        text = ""
+        try:
+            text = e.response.text[:200]
+        except Exception:
+            pass
+        await status.log_error(
+            f"FETCH HTTP ERROR: {e.response.status_code} {text}"
+        )
+        return []
+    except Exception as e:
+        # Netzwerkfehler etc.
+        await status.log_error(f"FETCH RAW ERROR: {repr(e)}")
+        return []
 
-    params = {
-        "start_date": start_str,
-        "end_date": end_str,
-    }
-
-    resp = await client.get(str(settings.API_BASE_URL), params=params)
-    resp.raise_for_status()
     raw = resp.json()
 
     if not isinstance(raw, list):
-        # Wenn die API unerwartet antwortet, machen wir lieber nichts.
-        await status.log_error(f"FETCH ERROR: unexpected response type {type(raw)}")
+        await status.log_error(
+            f"FETCH ERROR: unexpected response type {type(raw)} (expected list)"
+        )
         return []
 
-    return [IncomingItem(**it) for it in raw]
+    try:
+        items = [IncomingItem(**it) for it in raw]
+    except Exception as e:
+        await status.log_error(f"FETCH PARSE ERROR: {repr(e)}")
+        return []
+
+    return items
 
 
 async def fetch_loop(queue: asyncio.Queue):
@@ -89,7 +95,8 @@ async def fetch_loop(queue: asyncio.Queue):
                     await queue.put(it.model_dump())
 
             except Exception as e:
+                # Catch-all, falls im fetch_once was Unerwartetes durchkommt
                 await status.inc("fetch_errors")
-                await status.log_error(f"FETCH ERROR: {repr(e)}")
+                await status.log_error(f"FETCH LOOP ERROR: {repr(e)}")
 
             await asyncio.sleep(settings.API_POLL_INTERVAL_SEC)
