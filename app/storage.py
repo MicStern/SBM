@@ -36,6 +36,7 @@ async def save_item(item: dict):
             await session.commit()
             await status.inc("saved_total")
             await status.set_time("last_save_at")
-        except Exception:
+        except Exception as e:
             await status.inc("save_errors")
+            await status.log_error(f"SAVE ERROR: {e}")
             raise
