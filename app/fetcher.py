@@ -10,12 +10,14 @@ from .status import status
 
 
 def _build_auth_headers() -> dict:
+    """Optional: Bearer Token aus ENV"""
     if settings.AUTH_TYPE.lower() == "bearer" and settings.AUTH_BEARER_TOKEN:
         return {"Authorization": f"Bearer {settings.AUTH_BEARER_TOKEN}"}
     return {}
 
 
 def _build_auth_tuple():
+    """Optional: Basic Auth aus ENV"""
     if (
         settings.AUTH_TYPE.lower() == "basic"
         and settings.AUTH_USERNAME
@@ -31,7 +33,8 @@ def _make_time_window() -> tuple[str, str]:
     end_date = jetzt
     start_date = end_date - 2 * Poll-Intervall
 
-    Format: 'YYYY-MM-DD HH:MM:SS'
+    Format wie dein API-Beispiel:
+    'YYYY-MM-DD HH:MM:SS'
     """
     now = datetime.now()
     window = timedelta(seconds=settings.API_POLL_INTERVAL_SEC * 2)
@@ -45,6 +48,10 @@ def _make_time_window() -> tuple[str, str]:
 
 
 async def fetch_once(client: httpx.AsyncClient) -> List[IncomingItem]:
+    """
+    Holt eine Liste deiner JSON-Objekte von der API.
+    Erwartetes Format: Liste von Objekten mit 'info' + 'data'.
+    """
     start_str, end_str = _make_time_window()
 
     params = {
@@ -52,20 +59,22 @@ async def fetch_once(client: httpx.AsyncClient) -> List[IncomingItem]:
         "end_date": end_str,
     }
 
-    r = await client.get(str(settings.API_BASE_URL), params=params)
-    r.raise_for_status()
-    raw = r.json()
+    resp = await client.get(str(settings.API_BASE_URL), params=params)
+    resp.raise_for_status()
+    raw = resp.json()
 
     if not isinstance(raw, list):
-        # Falls der Server etwas anderes zurückliefert, lieber nichts tun,
-        # statt das System zu zerschießen.
+        # Wenn die API unerwartet antwortet, machen wir lieber nichts.
+        await status.log_error(f"FETCH ERROR: unexpected response type {type(raw)}")
         return []
 
-    # JSON -> Pydantic
     return [IncomingItem(**it) for it in raw]
 
 
 async def fetch_loop(queue: asyncio.Queue):
+    """
+    Endlosschleife: pollt deine API in Intervallen und legt Items in die Queue.
+    """
     headers = _build_auth_headers()
     auth = _build_auth_tuple()
 
@@ -77,11 +86,10 @@ async def fetch_loop(queue: asyncio.Queue):
                 await status.set_time("last_fetch_at")
 
                 for it in items:
-                    # Direkt in Queue legen
                     await queue.put(it.model_dump())
 
             except Exception as e:
                 await status.inc("fetch_errors")
-                await status.log_error(f"FETCH ERROR: {e}")
+                await status.log_error(f"FETCH ERROR: {repr(e)}")
 
             await asyncio.sleep(settings.API_POLL_INTERVAL_SEC)
