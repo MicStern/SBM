@@ -12,7 +12,6 @@ class Record(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-Index("ix_records_packet_id", Record.packet_id)
 
 class PacketLabel(Base):
     __tablename__ = "packet_labels"
