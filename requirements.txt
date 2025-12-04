@@ -4,6 +4,7 @@ httpx
 SQLAlchemy>=2.0
 asyncpg
 pydantic
+pydantic-settings
 jinja2
 alembic
 python-multipart
