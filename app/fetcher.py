@@ -81,8 +81,7 @@ async def fetch_loop(queue: asyncio.Queue):
                     await queue.put(it.model_dump())
 
             except Exception as e:
-                await status.inc("save_errors")
-                await status.log_error(f"SAVE ERROR: {e}")
-                raise
+                await status.inc("fetch_errors")
+                await status.log_error(f"FETCH ERROR: {e}")
 
             await asyncio.sleep(settings.API_POLL_INTERVAL_SEC)
