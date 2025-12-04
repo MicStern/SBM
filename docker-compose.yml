@@ -22,7 +22,7 @@ services:
         condition: service_healthy
     # .env wird automatisch eingelesen, zusätzlich hier DB-URL fest verdrahtet:
     env_file:
-      - .env
+      - .env.example
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@db:5432/appdb
     ports:
