@@ -1,7 +1,9 @@
 import asyncio
 from dataclasses import dataclass, field
 from time import time
-from typing import Optional
+from typing import Optional, List
+
+MAX_ERROR_LOGS = 20
 
 @dataclass
 class Status:
@@ -12,6 +14,9 @@ class Status:
     saved_total: int = 0
     fetch_errors: int = 0
     save_errors: int = 0
+
+    error_logs: List[str] = field(default_factory=list)
+
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     async def inc(self, attr: str, value: int = 1):
@@ -22,4 +27,8 @@ class Status:
         async with self._lock:
             setattr(self, attr, time())
 
-status = Status()
+    async def log_error(self, msg: str):
+        async with self._lock:
+            self.error_logs.append(msg)
+            if len(self.error_logs) > MAX_ERROR_LOGS:
+                self.error_logs = self.error_logs[-MAX_ERROR_LOGS:]
