@@ -5,6 +5,7 @@ from typing import Optional, List
 
 MAX_ERROR_LOGS = 20
 
+
 @dataclass
 class Status:
     started_at: float = field(default_factory=time)
@@ -15,6 +16,7 @@ class Status:
     fetch_errors: int = 0
     save_errors: int = 0
 
+    # neue Fehlerliste
     error_logs: List[str] = field(default_factory=list)
 
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -32,3 +34,7 @@ class Status:
             self.error_logs.append(msg)
             if len(self.error_logs) > MAX_ERROR_LOGS:
                 self.error_logs = self.error_logs[-MAX_ERROR_LOGS:]
+
+
+# WICHTIG: globale Instanz, auf die main/fetcher/storage zugreifen
+status = Status()
