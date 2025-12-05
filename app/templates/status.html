@@ -13,6 +13,81 @@
     input[type="text"] { padding: 4px 6px; }
     button { padding: 4px 8px; cursor: pointer; }
     .grid { display: grid; grid-template-columns: 1fr 2fr; gap: 24px; }
+
+    /* Schwerpunkt-Visualizer */
+    #sv-container {
+      margin-top: 32px;
+      border-top: 1px solid #ddd;
+      padding-top: 16px;
+    }
+    #sv-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    #sv-controls label {
+      font-size: 14px;
+    }
+    #sv-square-wrapper {
+      margin-top: 12px;
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    #sv-square {
+      position: relative;
+      width: 260px;
+      height: 260px;
+      border: 2px solid #333;
+      box-sizing: border-box;
+      background: #fafafa;
+    }
+    #sv-square .corner-label {
+      position: absolute;
+      font-size: 12px;
+      background: rgba(255,255,255,0.9);
+      padding: 2px 4px;
+      border-radius: 3px;
+      border: 1px solid #ddd;
+    }
+    #sv-corner-kl { top: 4px; left: 4px; }
+    #sv-corner-kr { top: 4px; right: 4px; }
+    #sv-corner-fl { bottom: 4px; left: 4px; }
+    #sv-corner-fr { bottom: 4px; right: 4px; }
+
+    #sv-dot {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: red;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+    }
+
+    #sv-meta {
+      font-size: 13px;
+      margin-top: 8px;
+    }
+
+    #sv-mapping {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+      min-width: 220px;
+    }
+    #sv-mapping label {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    #sv-mapping select {
+      min-width: 110px;
+    }
   </style>
 </head>
 <body>
@@ -81,5 +156,270 @@
       </table>
     </div>
   </div>
+
+  <!-- Schwerpunkt-Visualizer -->
+  <div id="sv-container">
+    <h2>Schwerpunkt-Visualizer (bed-center)</h2>
+
+    <div id="sv-controls">
+      <label>
+        Packet / UUID:
+        <select id="sv-packet-select">
+          <option value="">-- auswählen --</option>
+          {% for p in packets %}
+          <option value="{{ p.packet_id }}">{{ p.packet_id }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <button id="sv-load-btn">Laden</button>
+
+      <button id="sv-play-btn">Play</button>
+      <button id="sv-pause-btn">Pause</button>
+
+      <span id="sv-status" class="muted"></span>
+    </div>
+
+    <div id="sv-square-wrapper">
+      <div id="sv-square">
+        <div id="sv-dot"></div>
+        <div class="corner-label" id="sv-corner-kl">KL (Kopf-Links)</div>
+        <div class="corner-label" id="sv-corner-kr">KR (Kopf-Rechts)</div>
+        <div class="corner-label" id="sv-corner-fl">FL (Fuß-Links)</div>
+        <div class="corner-label" id="sv-corner-fr">FR (Fuß-Rechts)</div>
+      </div>
+
+      <div id="sv-mapping">
+        <strong>Zuordnung Gewicht → Bettfuß</strong>
+        <label>
+          KL (Kopf-Links)
+          <select id="sv-map-kl">
+            <option value="none">– keiner –</option>
+            <option value="weightA">weightA</option>
+            <option value="weightB">weightB</option>
+            <option value="weightC">weightC</option>
+            <option value="weightD">weightD</option>
+          </select>
+        </label>
+        <label>
+          KR (Kopf-Rechts)
+          <select id="sv-map-kr">
+            <option value="none">– keiner –</option>
+            <option value="weightA">weightA</option>
+            <option value="weightB">weightB</option>
+            <option value="weightC">weightC</option>
+            <option value="weightD">weightD</option>
+          </select>
+        </label>
+        <label>
+          FL (Fuß-Links)
+          <select id="sv-map-fl">
+            <option value="none">– keiner –</option>
+            <option value="weightA">weightA</option>
+            <option value="weightB">weightB</option>
+            <option value="weightC">weightC</option>
+            <option value="weightD">weightD</option>
+          </select>
+        </label>
+        <label>
+          FR (Fuß-Rechts)
+          <select id="sv-map-fr">
+            <option value="none">– keiner –</option>
+            <option value="weightA">weightA</option>
+            <option value="weightB">weightB</option>
+            <option value="weightC">weightC</option>
+            <option value="weightD">weightD</option>
+          </select>
+        </label>
+        <p class="muted">
+          Hinweis: Wenn ein Gewicht (z. B. weightD) im Datensatz nicht existiert,
+          wird es intern als 0 behandelt – kein Fehler.
+        </p>
+      </div>
+    </div>
+
+    <div id="sv-meta" class="muted">
+      Schwerpunkt wird aus den relativen Belastungen der gewählten Füße berechnet.
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const packetSelect = document.getElementById('sv-packet-select');
+      const loadBtn = document.getElementById('sv-load-btn');
+      const playBtn = document.getElementById('sv-play-btn');
+      const pauseBtn = document.getElementById('sv-pause-btn');
+      const statusSpan = document.getElementById('sv-status');
+      const square = document.getElementById('sv-square');
+      const dot = document.getElementById('sv-dot');
+
+      const mapKL = document.getElementById('sv-map-kl');
+      const mapKR = document.getElementById('sv-map-kr');
+      const mapFL = document.getElementById('sv-map-fl');
+      const mapFR = document.getElementById('sv-map-fr');
+
+      let frames = [];
+      let currentIndex = 0;
+      let timerId = null;
+
+      // Optional: Default-Mapping grob setzen (kannst du anpassen)
+      mapKL.value = "weightA";
+      mapKR.value = "weightB";
+      mapFL.value = "weightC";
+      mapFR.value = "none";
+
+      function getMapping() {
+        return {
+          KL: mapKL.value,
+          KR: mapKR.value,
+          FL: mapFL.value,
+          FR: mapFR.value,
+        };
+      }
+
+      const positions = {
+        // Kopfseite oben (y = -1), Fußende unten (y = +1)
+        KL: { x: -1, y: -1 },
+        KR: { x:  1, y: -1 },
+        FL: { x: -1, y:  1 },
+        FR: { x:  1, y:  1 },
+      };
+
+      function computeCenter(frame, mapping) {
+        let sumW = 0;
+        let sumX = 0;
+        let sumY = 0;
+
+        for (const corner of Object.keys(mapping)) {
+          const key = mapping[corner];
+          if (!key || key === "none") {
+            continue;
+          }
+          const w = frame[key];
+          const weight = (typeof w === "number" && isFinite(w)) ? w : 0;
+          if (weight === 0) continue;
+
+          const pos = positions[corner];
+          sumW += weight;
+          sumX += weight * pos.x;
+          sumY += weight * pos.y;
+        }
+
+        if (sumW === 0) {
+          return { x: 0, y: 0 };
+        }
+        return { x: sumX / sumW, y: sumY / sumW };
+      }
+
+      function renderFrame(idx) {
+        if (!frames.length) {
+          statusSpan.textContent = "Keine Frames geladen.";
+          return;
+        }
+        if (idx < 0 || idx >= frames.length) {
+          return;
+        }
+        const frame = frames[idx];
+        const mapping = getMapping();
+        const center = computeCenter(frame, mapping);
+
+        const rect = square.getBoundingClientRect();
+        const size = rect.width; // wir gehen von einem Quadrat aus
+        const dotSize = dot.offsetWidth || 14;
+
+        // x,y ∈ [-1, 1] -> [0, 1]
+        const xNorm = (center.x + 1) / 2;
+        const yNorm = (center.y + 1) / 2;
+
+        const left = xNorm * (size);
+        const top = yNorm * (size);
+
+        dot.style.left = left + "px";
+        dot.style.top = top + "px";
+
+        statusSpan.textContent = `Frame ${idx + 1} / ${frames.length} (t=${frame.timestamp || "?"})`;
+      }
+
+      function stopPlayback() {
+        if (timerId !== null) {
+          clearInterval(timerId);
+          timerId = null;
+        }
+      }
+
+      async function loadPacket() {
+        stopPlayback();
+        currentIndex = 0;
+
+        const pid = packetSelect.value;
+        if (!pid) {
+          statusSpan.textContent = "Bitte zuerst eine UUID auswählen.";
+          return;
+        }
+
+        statusSpan.textContent = "Lade Daten ...";
+
+        try {
+          const resp = await fetch(`/packet_weights?packet_id=${encodeURIComponent(pid)}`);
+          if (!resp.ok) {
+            statusSpan.textContent = `Fehler beim Laden (${resp.status})`;
+            return;
+          }
+          const data = await resp.json();
+          frames = data.frames || [];
+          if (!frames.length) {
+            statusSpan.textContent = "Keine Frames für diese UUID gefunden.";
+            return;
+          }
+          statusSpan.textContent = `Frames geladen: ${frames.length}`;
+          renderFrame(currentIndex);
+        } catch (e) {
+          console.error(e);
+          statusSpan.textContent = "Fehler beim Laden (siehe Konsole).";
+        }
+      }
+
+      function startPlayback() {
+        if (!frames.length) {
+          statusSpan.textContent = "Keine Frames geladen – bitte zuerst 'Laden' klicken.";
+          return;
+        }
+        if (timerId !== null) {
+          // läuft schon
+          return;
+        }
+        statusSpan.textContent = `Play (${frames.length} Frames)`;
+        timerId = setInterval(() => {
+          currentIndex = (currentIndex + 1) % frames.length;
+          renderFrame(currentIndex);
+        }, 500); // 500ms pro Sekunde Messung -> schneller Durchlauf
+      }
+
+      loadBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        loadPacket();
+      });
+
+      playBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        startPlayback();
+      });
+
+      pauseBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        stopPlayback();
+        if (frames.length) {
+          statusSpan.textContent = `Pause bei Frame ${currentIndex + 1}/${frames.length}`;
+        } else {
+          statusSpan.textContent = "Pause.";
+        }
+      });
+
+      // Beim ersten Laden Dot in die Mitte setzen
+      window.addEventListener('load', () => {
+        renderFrame(0);
+      });
+    })();
+  </script>
 </body>
 </html>
