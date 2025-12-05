@@ -134,10 +134,54 @@ async def set_label(packet_id: str = Form(...), label: str = Form("")):
     return RedirectResponse(url="/", status_code=303)
 
 
+@app.get("/packet_weights")
+async def packet_weights(packet_id: str):
+    """
+    Liefert alle Frames (Sekunden) für eine UUID/packet_id,
+    inklusive weightA/B/C/D (D wird auf 0 gesetzt, wenn nicht vorhanden).
+    Sortierung: nach created_at (Einspeise-Reihenfolge).
+    """
+    async with SessionLocal() as session:
+        q = (
+            select(Record)
+            .where(Record.packet_id == packet_id)
+            .order_by(Record.created_at.asc())
+        )
+        records = (await session.execute(q)).scalars().all()
+
+    frames = []
+
+    for rec in records:
+        payload = rec.payload or {}
+
+        def get_weight(key: str) -> float:
+            v = payload.get(key)
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        frames.append(
+            {
+                "timestamp": payload.get("dateTime") or (
+                    rec.created_at.isoformat() if rec.created_at else None
+                ),
+                "weightA": get_weight("weightA"),
+                "weightB": get_weight("weightB"),
+                "weightC": get_weight("weightC"),
+                # weightD evtl. nicht vorhanden -> 0.0
+                "weightD": get_weight("weightD"),
+            }
+        )
+
+    return JSONResponse({"packet_id": packet_id, "frames": frames})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def status_page(request: Request):
     """
-    HTML-Statusseite mit Runtime-Infos, Paketliste & Fehler-Logs.
+    HTML-Statusseite mit Runtime-Infos, Paketliste, Fehler-Logs
+    und Schwerpunkt-Visualizer.
     """
     async with SessionLocal() as session:
         q = (
