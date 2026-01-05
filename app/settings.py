@@ -1,20 +1,21 @@
+from typing import Optional
+
 from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
     API_BASE_URL: AnyHttpUrl | str
-    API_POLL_INTERVAL_SEC: float = 10.0
+    API_POLL_INTERVAL_SEC: float = 10.0  # legacy (nicht mehr zentral genutzt, ok)
 
-    AUTH_TYPE: str = "none"     # none|basic|bearer
+    AUTH_TYPE: str = "none"  # none|basic|bearer
     AUTH_USERNAME: Optional[str] = None
     AUTH_PASSWORD: Optional[str] = None
     AUTH_BEARER_TOKEN: Optional[str] = None
 
     DATABASE_URL: str
 
-    # WICHTIG: jetzt label_uid statt labelUUID
+    # NEU: packet id key aus neuer JSON Struktur
     GROUP_KEY_NAME: str = "label_uid"
 
     HOST: str = "0.0.0.0"
@@ -27,11 +28,12 @@ class Settings(BaseSettings):
     ANALYSIS_INTERVAL_SEC: float = 300.0
     ANALYSIS_WORKERS: int = 1
 
+    # Defaults für FetchConfig (UI kann überschreiben)
     DEFAULT_WINDOW_SECONDS: int = 300
     DEFAULT_POLL_SECONDS: int = 30
 
     class Config:
-        env_file = ".env"
+        env_file = ".env.example"  # <-- wie du gesagt hast
 
 
 settings = Settings()
