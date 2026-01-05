@@ -2,6 +2,7 @@ from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+
 class Settings(BaseSettings):
     API_BASE_URL: AnyHttpUrl | str
     API_POLL_INTERVAL_SEC: float = 10.0
@@ -12,7 +13,9 @@ class Settings(BaseSettings):
     AUTH_BEARER_TOKEN: Optional[str] = None
 
     DATABASE_URL: str
-    GROUP_KEY_NAME: str = "labelUUID"
+
+    # WICHTIG: jetzt label_uid statt labelUUID
+    GROUP_KEY_NAME: str = "label_uid"
 
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -24,7 +27,11 @@ class Settings(BaseSettings):
     ANALYSIS_INTERVAL_SEC: float = 300.0
     ANALYSIS_WORKERS: int = 1
 
+    DEFAULT_WINDOW_SECONDS: int = 300
+    DEFAULT_POLL_SECONDS: int = 30
+
     class Config:
         env_file = ".env"
+
 
 settings = Settings()
