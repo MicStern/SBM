@@ -10,7 +10,7 @@
     th { text-align: left; }
     .muted { color: #666; }
     form.inline { display: inline-flex; gap: 8px; align-items: center; }
-    input[type="text"] { padding: 4px 6px; }
+    input[type="text"], input[type="datetime-local"], input[type="number"] { padding: 4px 6px; }
     button { padding: 4px 8px; cursor: pointer; }
     .grid { display: grid; grid-template-columns: 1fr 2fr; gap: 24px; }
 
@@ -88,6 +88,14 @@
     #sv-mapping select {
       min-width: 110px;
     }
+
+    .card {
+      border: 1px solid #ddd;
+      padding: 12px;
+      border-radius: 8px;
+      background: #fff;
+      margin-bottom: 12px;
+    }
   </style>
 </head>
 <body>
@@ -95,65 +103,119 @@
 
   <div class="grid">
     <div>
-      <h2>Runtime</h2>
-      <ul>
-        <li>Started: {{ s.started_at }}</li>
-        <li>Last Fetch: {{ s.last_fetch_at }}</li>
-        <li>Last Save: {{ s.last_save_at }}</li>
-        <li>Fetched Total: {{ s.fetched_total }}</li>
-        <li>Saved Total: {{ s.saved_total }}</li>
-        <li>Fetch Errors: {{ s.fetch_errors }}</li>
-        <li>Save Errors: {{ s.save_errors }}</li>
-        <li>Queue Size: {{ queue_size }}</li>
-      </ul>
+      <div class="card">
+        <h2>Fetcher Control</h2>
 
-      <h2>Analyse</h2>
-      <p class="muted">TBD</p>
+        {% if (not fetch_config.enabled) or (fetch_config.cursor is none) %}
+          <p class="muted">
+            Fetcher ist aktuell <b>pausiert</b>. Bitte Startzeit auswählen.
+          </p>
 
-      <h2>Fehler-Logs (letzte {{ s.error_logs|length }})</h2>
-      {% if s.error_logs %}
-      <div style="border:1px solid #ccc; padding:10px; max-height:250px; overflow-y:auto; white-space:pre-wrap; background:#fafafa;">
-        {% for log in s.error_logs %}
-          • {{ log }}<br>
-        {% endfor %}
+          <form method="post" action="/fetch/start" class="inline" style="flex-wrap:wrap;">
+            <label>
+              Startzeit (UTC):
+              <input type="datetime-local" name="start_dt" required>
+            </label>
+            <label>
+              Window (s):
+              <input type="number" name="window_seconds" value="{{ fetch_config.window_seconds }}" style="width:100px;">
+            </label>
+            <label>
+              Poll (s):
+              <input type="number" name="poll_seconds" value="{{ fetch_config.poll_seconds }}" style="width:100px;">
+            </label>
+            <button type="submit">Start Fetch</button>
+          </form>
+
+          <p class="muted" style="margin-top:8px;">
+            Hinweis: datetime-local enthält keine Zeitzone. Wir interpretieren das aktuell als UTC.
+            (Wenn du Berlin-Zeit willst, sag Bescheid – dann bauen wir das sauber um.)
+          </p>
+        {% else %}
+          <ul>
+            <li><b>enabled:</b> {{ fetch_config.enabled }}</li>
+            <li><b>cursor:</b> {{ fetch_config.cursor }}</li>
+            <li><b>window_seconds:</b> {{ fetch_config.window_seconds }}</li>
+            <li><b>poll_seconds:</b> {{ fetch_config.poll_seconds }}</li>
+          </ul>
+
+          <form method="post" action="/fetch/stop" class="inline">
+            <button type="submit">Stop</button>
+          </form>
+
+          <form method="post" action="/fetch/reset" class="inline" style="margin-left:8px;">
+            <button type="submit">Reset</button>
+          </form>
+        {% endif %}
       </div>
-      {% else %}
-      <p class="muted">Keine Fehler bisher.</p>
-      {% endif %}
+
+      <div class="card">
+        <h2>Runtime</h2>
+        <ul>
+          <li>Started: {{ s.started_at }}</li>
+          <li>Last Fetch: {{ s.last_fetch_at }}</li>
+          <li>Last Save: {{ s.last_save_at }}</li>
+          <li>Fetched Total: {{ s.fetched_total }}</li>
+          <li>Saved Total: {{ s.saved_total }}</li>
+          <li>Fetch Errors: {{ s.fetch_errors }}</li>
+          <li>Save Errors: {{ s.save_errors }}</li>
+          <li>Queue Size: {{ queue_size }}</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>Analyse</h2>
+        <p class="muted">TBD</p>
+      </div>
+
+      <div class="card">
+        <h2>Fehler-Logs (letzte {{ s.error_logs|length }})</h2>
+        {% if s.error_logs %}
+        <div style="border:1px solid #ccc; padding:10px; max-height:250px; overflow-y:auto; white-space:pre-wrap; background:#fafafa;">
+          {% for log in s.error_logs %}
+            • {{ log }}<br>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">Keine Fehler bisher.</p>
+        {% endif %}
+      </div>
     </div>
 
     <div>
-      <h2>Pakete (gruppiert: {{ packets|length }})</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>packet_id</th>
-            <th>Count</th>
-            <th>Last Seen</th>
-            <th>Label</th>
-            <th>Set Label</th>
-          </tr>
-        </thead>
-        <tbody>
-        {% for p in packets %}
-          <tr>
-            <td>{{ p.packet_id }}</td>
-            <td>{{ p.count }}</td>
-            <td>{{ p.last_seen }}</td>
-            <td>{{ p.label or "" }}</td>
-            <td>
-              <form class="inline" method="post" action="/label">
-                <input type="hidden" name="packet_id" value="{{ p.packet_id }}">
-                <input type="text" name="label" placeholder="Label eingeben" value="{{ p.label or '' }}">
-                <button type="submit">Speichern</button>
-              </form>
-            </td>
-          </tr>
-        {% else %}
-          <tr><td colspan="5" class="muted">Noch keine Pakete.</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
+      <div class="card">
+        <h2>Pakete (gruppiert: {{ packets|length }})</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>packet_id (label_uid)</th>
+              <th>Count</th>
+              <th>Last Seen</th>
+              <th>Label</th>
+              <th>Set Label</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for p in packets %}
+            <tr>
+              <td>{{ p.packet_id }}</td>
+              <td>{{ p.count }}</td>
+              <td>{{ p.last_seen }}</td>
+              <td>{{ p.label or "" }}</td>
+              <td>
+                <form class="inline" method="post" action="/label">
+                  <input type="hidden" name="packet_id" value="{{ p.packet_id }}">
+                  <input type="text" name="label" placeholder="Label eingeben" value="{{ p.label or '' }}">
+                  <button type="submit">Speichern</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="muted">Noch keine Pakete.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -262,11 +324,11 @@
       let currentIndex = 0;
       let timerId = null;
 
-      // Optional: Default-Mapping grob setzen (kannst du anpassen)
+      // Default-Mapping (kannst du anpassen)
       mapKL.value = "weightA";
       mapKR.value = "weightB";
       mapFL.value = "weightC";
-      mapFR.value = "none";
+      mapFR.value = "weightD";
 
       function getMapping() {
         return {
@@ -278,7 +340,6 @@
       }
 
       const positions = {
-        // Kopfseite oben (y = -1), Fußende unten (y = +1)
         KL: { x: -1, y: -1 },
         KR: { x:  1, y: -1 },
         FL: { x: -1, y:  1 },
@@ -292,9 +353,8 @@
 
         for (const corner of Object.keys(mapping)) {
           const key = mapping[corner];
-          if (!key || key === "none") {
-            continue;
-          }
+          if (!key || key === "none") continue;
+
           const w = frame[key];
           const weight = (typeof w === "number" && isFinite(w)) ? w : 0;
           if (weight === 0) continue;
@@ -305,9 +365,7 @@
           sumY += weight * pos.y;
         }
 
-        if (sumW === 0) {
-          return { x: 0, y: 0 };
-        }
+        if (sumW === 0) return { x: 0, y: 0 };
         return { x: sumX / sumW, y: sumY / sumW };
       }
 
@@ -316,23 +374,20 @@
           statusSpan.textContent = "Keine Frames geladen.";
           return;
         }
-        if (idx < 0 || idx >= frames.length) {
-          return;
-        }
+        if (idx < 0 || idx >= frames.length) return;
+
         const frame = frames[idx];
         const mapping = getMapping();
         const center = computeCenter(frame, mapping);
 
         const rect = square.getBoundingClientRect();
-        const size = rect.width; // wir gehen von einem Quadrat aus
-        const dotSize = dot.offsetWidth || 14;
+        const size = rect.width;
 
-        // x,y ∈ [-1, 1] -> [0, 1]
         const xNorm = (center.x + 1) / 2;
         const yNorm = (center.y + 1) / 2;
 
-        const left = xNorm * (size);
-        const top = yNorm * (size);
+        const left = xNorm * size;
+        const top = yNorm * size;
 
         dot.style.left = left + "px";
         dot.style.top = top + "px";
@@ -384,15 +439,13 @@
           statusSpan.textContent = "Keine Frames geladen – bitte zuerst 'Laden' klicken.";
           return;
         }
-        if (timerId !== null) {
-          // läuft schon
-          return;
-        }
+        if (timerId !== null) return;
+
         statusSpan.textContent = `Play (${frames.length} Frames)`;
         timerId = setInterval(() => {
           currentIndex = (currentIndex + 1) % frames.length;
           renderFrame(currentIndex);
-        }, 500); // 500ms pro Sekunde Messung -> schneller Durchlauf
+        }, 500);
       }
 
       loadBtn.addEventListener('click', (e) => {
@@ -408,14 +461,10 @@
       pauseBtn.addEventListener('click', (e) => {
         e.preventDefault();
         stopPlayback();
-        if (frames.length) {
-          statusSpan.textContent = `Pause bei Frame ${currentIndex + 1}/${frames.length}`;
-        } else {
-          statusSpan.textContent = "Pause.";
-        }
+        if (frames.length) statusSpan.textContent = `Pause bei Frame ${currentIndex + 1}/${frames.length}`;
+        else statusSpan.textContent = "Pause.";
       });
 
-      // Beim ersten Laden Dot in die Mitte setzen
       window.addEventListener('load', () => {
         renderFrame(0);
       });
