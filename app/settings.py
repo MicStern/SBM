@@ -1,37 +1,36 @@
 from typing import Optional
-
-from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    API_BASE_URL: AnyHttpUrl | str
+    # API
+    API_BASE_URL: str
+    API_POLL_INTERVAL_SEC: float = 30.0
+    API_WINDOW_SEC: int = 300  # 5 Minuten Fenster pro Fetch
 
+    # Auth
     AUTH_TYPE: str = "none"  # none|basic|bearer
     AUTH_USERNAME: Optional[str] = None
     AUTH_PASSWORD: Optional[str] = None
     AUTH_BEARER_TOKEN: Optional[str] = None
 
+    # DB
     DATABASE_URL: str
 
-    GROUP_KEY_NAME: str = "label_uid"
-    TIMEZONE: str = "Europe/Berlin"
-
+    # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
+    # Workers
     SAVE_CONCURRENCY: int = 5
     QUEUE_MAXSIZE: int = 1000
 
-    DEFAULT_WINDOW_SECONDS: int = 300
-    DEFAULT_POLL_SECONDS: int = 30
-
-    # <<< FIX: analysis_loop erwartet das
+    # Analyse (damit analysis_loop nicht crasht)
     ANALYSIS_INTERVAL_SEC: float = 300.0
-    ANALYSIS_WORKERS: int = 1
 
     class Config:
         env_file = ".env.example"
+        extra = "ignore"
 
 
 settings = Settings()
