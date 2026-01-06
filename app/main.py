@@ -1,6 +1,4 @@
 # app/main.py
-from __future__ import annotations
-
 import asyncio
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -12,26 +10,20 @@ from sqlalchemy import select, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import SessionLocal, engine
+from .fetcher import fetch_loop, fetch_theta, build_theta_url
 from .models import Base, Measurement, MeasurementGroup
 from .settings import settings
 from .status import status
 from .storage import save_item
-from .fetcher import fetch_loop
 
 
 app = FastAPI()
 templates = Jinja2Templates(directory="app/templates")
 
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
-
+THETA_TZ = ZoneInfo(settings.THETA_TIMEZONE)
 
 def ts_berlin(value):
-    """
-    Jinja Filter:
-    - epoch seconds (float/int) => Berlin time
-    - datetime (aware/naiv) => Berlin time
-    - string => string (unverändert)
-    """
     if value is None:
         return "—"
     try:
@@ -44,67 +36,55 @@ def ts_berlin(value):
                 value = value.replace(tzinfo=timezone.utc)
             return value.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
 
+        if isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+            except Exception:
+                return value
+
         return str(value)
     except Exception:
         return str(value)
-
 
 templates.env.filters["ts_berlin"] = ts_berlin
 
 queue: asyncio.Queue | None = None
 
 
-async def saver_loop(q: asyncio.Queue):
-    while True:
-        item = await q.get()
-        try:
-            await save_item(item)
-        except Exception as e:
-            status.save_errors += 1
-            status.error_logs.append(f"SAVE ERROR: {repr(e)}")
-        finally:
-            q.task_done()
+def _parse_dt_local_to_utc(dt_local_str: str, tz: ZoneInfo) -> datetime:
+    """
+    dt_local_str kommt aus <input type="datetime-local"> => "YYYY-MM-DDTHH:MM" (naiv)
+    Wir interpretieren in tz und wandeln nach UTC.
+    """
+    dt_local = datetime.fromisoformat(dt_local_str)  # naive
+    dt_zoned = dt_local.replace(tzinfo=tz)
+    return dt_zoned.astimezone(timezone.utc)
 
 
 @app.on_event("startup")
 async def startup():
     global queue
-    queue = asyncio.Queue(maxsize=getattr(settings, "QUEUE_MAXSIZE", 10000))
+    status.started_at = datetime.now(timezone.utc).timestamp()
 
-    # Tabellen anlegen (Prod: Alembic)
+    queue = asyncio.Queue(maxsize=settings.QUEUE_MAXSIZE)
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # status defaults
-    if not hasattr(status, "started_at") or status.started_at is None:
-        status.started_at = datetime.now(timezone.utc).timestamp()
-    if not hasattr(status, "last_fetch_at"):
-        status.last_fetch_at = None
-    if not hasattr(status, "last_save_at"):
-        status.last_save_at = None
-    if not hasattr(status, "fetched_total"):
-        status.fetched_total = 0
-    if not hasattr(status, "saved_total"):
-        status.saved_total = 0
-    if not hasattr(status, "fetch_errors"):
-        status.fetch_errors = 0
-    if not hasattr(status, "save_errors"):
-        status.save_errors = 0
-    if not hasattr(status, "error_logs"):
-        status.error_logs = []
-
-    # Fetcher state
-    status.fetch_enabled = getattr(status, "fetch_enabled", False)
-    status.fetch_started_at = getattr(status, "fetch_started_at", None)
-    status.fetch_cursor_utc = getattr(status, "fetch_cursor_utc", None)
-    status.fetch_window_sec = getattr(status, "fetch_window_sec", getattr(settings, "DEFAULT_WINDOW_SEC", 1800))
-    status.fetch_poll_sec = getattr(status, "fetch_poll_sec", getattr(settings, "DEFAULT_POLL_SEC", 30))
-
-    # Fetch Loop
     asyncio.create_task(fetch_loop(queue))
 
-    # Saver Workers
-    for _ in range(int(getattr(settings, "SAVE_CONCURRENCY", 2))):
+    async def saver_loop(q: asyncio.Queue):
+        while True:
+            item = await q.get()
+            try:
+                await save_item(item)
+            finally:
+                q.task_done()
+
+    for _ in range(settings.SAVE_CONCURRENCY):
         asyncio.create_task(saver_loop(queue))
 
 
@@ -125,74 +105,85 @@ async def status_json():
             "fetch_errors": status.fetch_errors,
             "save_errors": status.save_errors,
             "queue_size": queue.qsize() if queue else 0,
-            "fetch_enabled": getattr(status, "fetch_enabled", False),
-            "fetch_started_at": getattr(status, "fetch_started_at", None),
-            "fetch_cursor_utc": getattr(status, "fetch_cursor_utc", None),
-            "fetch_window_sec": getattr(status, "fetch_window_sec", None),
-            "fetch_poll_sec": getattr(status, "fetch_poll_sec", None),
             "error_logs": list(status.error_logs),
+            "fetch_enabled": status.fetch_enabled,
+            "fetch_started_at": status.fetch_started_at,
+            "fetch_cursor_utc": status.fetch_cursor_utc,
+            "fetch_window_sec": status.fetch_window_sec,
+            "fetch_poll_sec": status.fetch_poll_sec,
         }
     )
 
 
 @app.post("/fetch/start")
 async def fetch_start(
-    start_dt: str = Form(...),  # kommt als "YYYY-MM-DDTHH:MM"
-    window_sec: int = Form(default=None),
-    poll_sec: int = Form(default=None),
+    start_dt: str = Form(...),
+    window_sec: int = Form(settings.DEFAULT_WINDOW_SEC),
+    poll_sec: int = Form(settings.DEFAULT_POLL_SEC),
 ):
-    """
-    Startzeit ist im UI Berlin-lokal (datetime-local ohne TZ).
-    Wir interpretieren es als Europe/Berlin und speichern Cursor in UTC ISO.
-    """
-    try:
-        local = datetime.fromisoformat(start_dt)  # naive
-    except Exception:
-        # Fallback: wenn browser komisch sendet
-        local = datetime.strptime(start_dt, "%Y-%m-%dT%H:%M")
-
-    local = local.replace(tzinfo=BERLIN_TZ)
-    start_utc = local.astimezone(timezone.utc)
+    # UI-Zeit ist Berlin-lokal
+    dt_utc = _parse_dt_local_to_utc(start_dt, BERLIN_TZ)
 
     status.fetch_enabled = True
     status.fetch_started_at = datetime.now(timezone.utc).timestamp()
-
-    if window_sec is None:
-        window_sec = int(getattr(settings, "DEFAULT_WINDOW_SEC", 1800))
-    if poll_sec is None:
-        poll_sec = int(getattr(settings, "DEFAULT_POLL_SEC", 30))
-
+    status.fetch_cursor_utc = dt_utc.isoformat()
     status.fetch_window_sec = int(window_sec)
     status.fetch_poll_sec = int(poll_sec)
 
-    # ✅ DAS ist der Cursor, den der fetch_loop aktiv übernimmt
-    status.fetch_cursor_utc = start_utc.isoformat()
-
-    status.error_logs.append(
-        f"FETCH START: cursor={status.fetch_cursor_utc} window={status.fetch_window_sec}s poll={status.fetch_poll_sec}s"
+    status.error_logs.appendleft(
+        f"FETCH START: cursor_utc={status.fetch_cursor_utc} window={status.fetch_window_sec}s poll={status.fetch_poll_sec}s"
     )
-
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/fetch/stop")
 async def fetch_stop():
     status.fetch_enabled = False
-    status.error_logs.append("FETCH STOP")
+    status.fetch_started_at = None
+    status.error_logs.appendleft("FETCH STOP")
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/fetch/once")
+async def fetch_once(
+    start_dt: str = Form(...),
+    end_dt: str = Form(...),
+):
+    """
+    Einmaliger Fetch von/bis aus UI.
+    UI-Zeit interpretieren wir in der gleichen TZ wie Theta (settings.THETA_TIMEZONE),
+    damit '15:00' auch wirklich '15:00' ist wie in Postman.
+    """
+    start_utc = _parse_dt_local_to_utc(start_dt, THETA_TZ)
+    end_utc = _parse_dt_local_to_utc(end_dt, THETA_TZ)
+
+    if end_utc <= start_utc:
+        status.error_logs.appendleft("FETCH ONCE ERROR: end <= start")
+        return RedirectResponse(url="/", status_code=303)
+
+    url = build_theta_url(start_utc, end_utc)
+    status.error_logs.appendleft(f"FETCH ONCE REQ: {url}")
+
+    items = await fetch_theta(start_utc, end_utc)
+
+    saved = 0
+    for it in items:
+        try:
+            await save_item(it)
+            saved += 1
+        except Exception:
+            # save_item loggt selbst in status.error_logs
+            pass
+
+    status.error_logs.appendleft(f"FETCH ONCE DONE: fetched={len(items)} saved={saved}")
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/label")
 async def set_label(label_uid: str = Form(...), label: str = Form("")):
-    """
-    Label setzen:
-    - measurement_groups.label
-    - alle measurements.label mit dieser label_uid
-    """
     label_val = label.strip() or None
 
     async with SessionLocal() as session:
-        # Group upsert
         grp_stmt = (
             pg_insert(MeasurementGroup)
             .values(label_uid=label_uid, label=label_val, measurement_ids=[])
@@ -203,7 +194,6 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
         )
         await session.execute(grp_stmt)
 
-        # Measurements updaten
         await session.execute(
             update(Measurement)
             .where(Measurement.label_uid == label_uid)
@@ -236,15 +226,12 @@ async def group_frames(label_uid: str):
     for m in rows:
         frames.append(
             {
-                # beides anbieten (UI nimmt bevorzugt timestamp_sensor_iso)
                 "timestamp_sensor_iso": m.timestamp_sensor_iso or None,
                 "timestamp": (
                     m.timestamp_sensor.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
                     if m.timestamp_sensor
                     else None
                 ),
-
-                # ✅ snake_case keys + Betrag
                 "weight_a": _abs_or_zero(m.weight_a),
                 "weight_b": _abs_or_zero(m.weight_b),
                 "weight_c": _abs_or_zero(m.weight_c),
@@ -254,20 +241,15 @@ async def group_frames(label_uid: str):
 
     return JSONResponse({"label_uid": label_uid, "frames": frames})
 
+
 @app.get("/", response_class=HTMLResponse)
 async def status_page(request: Request):
-    """
-    Statusseite:
-    - Runtime
-    - Gruppenübersicht
-    - Fetch-Status (fetch.enabled / fetch.cursor_utc / fetch.window_sec / fetch.poll_sec)
-    """
-
     fetch = {
-        "enabled": getattr(status, "fetch_enabled", False),
-        "cursor_utc": getattr(status, "fetch_cursor_utc", None),
-        "window_sec": getattr(status, "fetch_window_sec", None),
-        "poll_sec": getattr(status, "fetch_poll_sec", None),
+        "enabled": bool(status.fetch_enabled),
+        "cursor_utc": status.fetch_cursor_utc,
+        "window_sec": status.fetch_window_sec,
+        "poll_sec": status.fetch_poll_sec,
+        "started_at": status.fetch_started_at,
     }
 
     async with SessionLocal() as session:
@@ -300,11 +282,7 @@ async def status_page(request: Request):
             {
                 "label_uid": uid,
                 "count": int(cnt or 0),
-                "last_seen": (
-                    last_seen.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
-                    if last_seen
-                    else None
-                ),
+                "last_seen": last_seen.isoformat() if last_seen else None,
                 "label": label,
             }
         )
@@ -317,5 +295,6 @@ async def status_page(request: Request):
             "queue_size": queue.qsize() if queue else 0,
             "groups": groups,
             "fetch": fetch,
+            "theta_timezone": settings.THETA_TIMEZONE,
         },
     )
