@@ -1,122 +1,135 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
-import aiohttp
+import httpx
 
 from .settings import settings
 from .status import status
 
 
-def _fmt_api_dt(dt_utc: datetime) -> str:
+UTC = timezone.utc
+BERLIN = ZoneInfo("Europe/Berlin")
+
+
+def build_theta_url(cursor_utc: datetime, window_sec: int) -> str:
     """
-    API erwartet: YYYY-MM-DD HH:MM:SS (ohne T/Z), in URL encoded.
-    Wir senden UTC-Zeit im Format, wie du es als Test-URL wolltest.
+    Baue hier deinen Theta-Request zusammen.
+    cursor_utc ist aware UTC datetime.
+    window_sec ist die Fenstergröße in Sekunden.
     """
-    dt_utc = dt_utc.astimezone(timezone.utc)
-    return dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+    end_utc = cursor_utc + timedelta(seconds=window_sec)
+
+    # Beispiel (bitte an deinen Theta-Endpunkt anpassen):
+    # /measurements?start=...&end=...
+    start_iso = cursor_utc.isoformat()
+    end_iso = end_utc.isoformat()
+
+    return f"{settings.THETA_BASE_URL}/measurements?start={start_iso}&end={end_iso}"
 
 
-def build_theta_url(start_utc: datetime, end_utc: datetime) -> str:
-    start_s = quote(_fmt_api_dt(start_utc))
-    end_s = quote(_fmt_api_dt(end_utc))
-    # exakt wie von dir gefordert:
-    # https://theta-v2-server.5micron.net/basic-api/probes/hsl?&start_date=...&end_date=...
-    return f"{settings.THETA_BASE_URL}?&start_date={start_s}&end_date={end_s}"
+def _get_httpx_auth():
+    if settings.AUTH_TYPE.lower() == "basic":
+        if not settings.AUTH_USERNAME or not settings.AUTH_PASSWORD:
+            raise RuntimeError(
+                "AUTH_TYPE=basic aber AUTH_USERNAME/AUTH_PASSWORD fehlen in ENV"
+            )
+        return httpx.BasicAuth(settings.AUTH_USERNAME, settings.AUTH_PASSWORD)
+    return None
 
 
-async def fetch_window(start_utc: datetime, end_utc: datetime):
+async def fetch_once(cursor_utc: datetime, window_sec: int) -> list[dict]:
     """
-    Holt JSON von Theta API.
-    Erwartung: Liste von Messpunkten (JSON array) oder dict mit Feld das Liste enthält.
+    Holt ein Fenster ab cursor_utc. Gibt eine Liste von JSON-Items zurück.
     """
-    url = build_theta_url(start_utc, end_utc)
+    url = build_theta_url(cursor_utc, window_sec)
+    auth = _get_httpx_auth()
 
-    timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                txt = await resp.text()
-                raise RuntimeError(f"HTTP {resp.status} from theta: {txt[:300]}")
-            return await resp.json()
+    async with httpx.AsyncClient(timeout=settings.THETA_TIMEOUT_SEC, auth=auth) as client:
+        resp = await client.get(url)
+
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "HTTP 401 from theta: Authorization header missing or invalid."
+            )
+
+        resp.raise_for_status()
+
+        data = resp.json()
+
+        # Falls Theta direkt { items: [...] } liefert, hier anpassen:
+        if isinstance(data, dict) and "items" in data:
+            return data["items"]
+
+        if isinstance(data, list):
+            return data
+
+        # fallback
+        return []
 
 
 async def fetch_loop(queue: asyncio.Queue):
     """
-    Läuft dauerhaft.
-    - Wenn fetch_enabled False -> schlafen.
-    - Wenn cursor in Vergangenheit -> Catch-up: schnell durchlaufen bis jetzt.
-    - Niemals in die Zukunft abfragen: window_end = min(cursor+window, now_utc).
-    - Wenn cursor >= now -> warten poll_sec, dann erneut probieren.
+    Läuft permanent im Hintergrund:
+    - Wenn disabled: schläft kurz
+    - Wenn enabled: holt Fenster ab cursor_utc (UTC)
+    - Schiebt Items in queue
+    - cursor_utc wird weitergeschoben (catchup bis jetzt)
     """
     while True:
         try:
-            if not status.fetch_enabled:
+            enabled = getattr(status, "fetch_enabled", False)
+            if not enabled:
                 await asyncio.sleep(0.5)
                 continue
 
-            if not status.fetch_cursor_utc:
-                # Safety: ohne Cursor nix zu tun
-                await asyncio.sleep(0.5)
-                continue
+            cursor_utc = getattr(status, "fetch_cursor_utc", None)
+            window_sec = int(getattr(status, "fetch_window_sec", 300) or 300)
+            poll_sec = int(getattr(status, "fetch_poll_sec", 30) or 30)
 
-            cursor_utc = datetime.fromisoformat(status.fetch_cursor_utc)
-            if cursor_utc.tzinfo is None:
-                cursor_utc = cursor_utc.replace(tzinfo=timezone.utc)
+            if cursor_utc is None:
+                # Sicherheitsfallback: jetzt - window
+                cursor_utc = datetime.now(UTC) - timedelta(seconds=window_sec)
+                status.fetch_cursor_utc = cursor_utc
 
-            now_utc = datetime.now(timezone.utc)
-
-            # Wenn Cursor schon "in der Zukunft" liegt: warten bis Zeit vorbei ist
+            # niemals in die Zukunft fetchen
+            now_utc = datetime.now(UTC)
             if cursor_utc >= now_utc:
-                await asyncio.sleep(max(1, int(status.fetch_poll_sec or 30)))
+                await asyncio.sleep(poll_sec)
                 continue
 
-            window_sec = int(status.fetch_window_sec or settings.DEFAULT_WINDOW_SEC)
-            poll_sec = int(status.fetch_poll_sec or settings.DEFAULT_POLL_SEC)
+            # Fenster begrenzen, sodass end nicht > now
+            end_utc = cursor_utc + timedelta(seconds=window_sec)
+            if end_utc > now_utc:
+                # verkürzen: nur bis jetzt
+                effective_window = int((now_utc - cursor_utc).total_seconds())
+                effective_window = max(effective_window, 1)
+            else:
+                effective_window = window_sec
 
-            window_end = cursor_utc + timedelta(seconds=window_sec)
-
-            # nie in die Zukunft
-            if window_end > now_utc:
-                window_end = now_utc
+            # Status-Update (für UI)
+            status.last_fetch_at = datetime.now(UTC).timestamp()
 
             # Fetch
-            data = await fetch_window(cursor_utc, window_end)
+            items = await fetch_once(cursor_utc, effective_window)
 
-            # Status updaten
-            status.last_fetch_at = datetime.now(timezone.utc).timestamp()
-
-            # items in queue
-            # Unterstützt:
-            # - list[dict]
-            # - dict mit "data"/"items"/"results"
-            items = []
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict):
-                for k in ("data", "items", "results"):
-                    if k in data and isinstance(data[k], list):
-                        items = data[k]
-                        break
-                if not items:
-                    # Wenn dict ein einzelnes item ist
-                    items = [data]
-            else:
-                items = []
-
+            # Push in Queue
             for item in items:
                 await queue.put(item)
                 status.fetched_total += 1
 
-            # Cursor nach vorne schieben
-            status.fetch_cursor_utc = window_end.astimezone(timezone.utc).isoformat()
+            # Cursor weiterschieben
+            status.fetch_cursor_utc = cursor_utc + timedelta(seconds=effective_window)
 
-            # Catch-up: wenn wir noch hinterherhinken, nicht poll-warten -> sofort weiter
-            # Wenn wir jetzt "nahe dran" sind (cursor >= now) greift oben das poll-warten.
-            await asyncio.sleep(0)
+            # Wenn wir noch hinterherhängen → sofort nächstes Fenster (kein sleep)
+            # Wenn wir "nahe an jetzt" sind → poll warten
+            if status.fetch_cursor_utc < (datetime.now(UTC) - timedelta(seconds=window_sec)):
+                # Catchup Mode: kein sleep
+                continue
+
+            await asyncio.sleep(poll_sec)
 
         except Exception as e:
             status.fetch_errors += 1
-            status.error_logs.appendleft(f"FETCH ERROR: {repr(e)}")
-            # kleine Backoff Pause
+            status.error_logs.append(f"FETCH ERROR: {repr(e)}")
             await asyncio.sleep(2)
