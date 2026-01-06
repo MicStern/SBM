@@ -1,6 +1,9 @@
+# app/fetcher.py
+from __future__ import annotations
+
 import asyncio
-import base64
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
@@ -9,173 +12,139 @@ from .settings import settings
 from .status import status
 
 
-UTC = timezone.utc
+def _theta_url() -> str:
+    return settings.THETA_BASE_URL.rstrip("/") + "/" + settings.THETA_PROBE_PATH.lstrip("/")
 
 
-def normalize_cursor(value: Any) -> datetime:
+def _theta_tz() -> ZoneInfo:
+    # Server-URL-Beispiel nutzt "YYYY-MM-DD HH:MM:SS" ohne TZ.
+    # Wir formatieren daher in der konfigurierten TZ (Default Berlin).
+    try:
+        return ZoneInfo(settings.THETA_TIMEZONE)
+    except Exception:
+        return ZoneInfo("Europe/Berlin")
+
+
+def _format_theta_dt(dt_utc: datetime) -> str:
+    tz = _theta_tz()
+    return dt_utc.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_auth() -> tuple[httpx.Auth | None, dict[str, str]]:
     """
-    Cursor-Normalisierung:
-    akzeptiert:
-    - datetime (naiv -> UTC)
-    - ISO-String (z.B. "2026-01-05T10:00:00+00:00" oder "...Z")
-    - epoch seconds (int/float oder str)
+    httpx:
+    - Basic Auth via httpx.BasicAuth (sauber)
+    - Bearer via Header
     """
-    if value is None:
-        return datetime.now(UTC) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
-
-    # datetime
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-    # epoch seconds
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=UTC)
-
-    # string -> ISO oder epoch
-    if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return datetime.now(UTC) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
-
-        # epoch as string?
-        try:
-            return datetime.fromtimestamp(float(s), tz=UTC)
-        except Exception:
-            pass
-
-        # ISO string
-        # handle trailing Z
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-            dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-            return dt
-        except Exception:
-            # fallback: now - default window
-            return datetime.now(UTC) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
-
-    # fallback
-    return datetime.now(UTC) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
-
-
-def build_auth_headers() -> dict[str, str]:
-    """
-    Unterstützt:
-    - AUTH_TYPE=basic + AUTH_USERNAME/PASSWORD
-    - AUTH_TYPE=none
-    """
-    auth_type = (settings.AUTH_TYPE or "none").strip().lower()
+    headers: dict[str, str] = {"Accept": "application/json"}
+    auth_type = (settings.AUTH_TYPE or "none").lower().strip()
 
     if auth_type == "basic":
-        user = settings.AUTH_USERNAME or ""
-        pwd = settings.AUTH_PASSWORD or ""
-        token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("ascii")
-        return {"Authorization": f"Basic {token}"}
+        if not settings.AUTH_USERNAME or not settings.AUTH_PASSWORD:
+            # besser sofort failen als 401 spammen
+            raise RuntimeError("AUTH_TYPE=basic aber AUTH_USERNAME/AUTH_PASSWORD fehlen in .env")
+        return httpx.BasicAuth(settings.AUTH_USERNAME, settings.AUTH_PASSWORD), headers
 
-    return {}
+    if auth_type == "bearer":
+        if not settings.AUTH_BEARER_TOKEN:
+            raise RuntimeError("AUTH_TYPE=bearer aber AUTH_BEARER_TOKEN fehlt in .env")
+        headers["Authorization"] = f"Bearer {settings.AUTH_BEARER_TOKEN}"
+        return None, headers
+
+    return None, headers
 
 
-async def fetch_window(cursor_utc: datetime, window_sec: int) -> list[dict]:
+async def fetch_theta(start_utc: datetime, end_utc: datetime) -> list[dict[str, Any]]:
     """
-    Ruft ein Zeitfenster bei Theta ab.
-    Annahme: Theta akzeptiert query params:
-      - cursor (ISO8601)
-      - window_sec (int)
-    Passe URL/Params an deinen Theta-Endpoint an, falls nötig.
+    Holt Rohdaten aus Theta für [start_utc, end_utc].
+    Erwartet JSON response (Liste oder dict mit list unter key).
     """
-    cursor_utc = normalize_cursor(cursor_utc)
-    window_sec = int(window_sec)
-
+    url = _theta_url()
     params = {
-        "cursor": cursor_utc.isoformat(),
-        "window_sec": window_sec,
+        "start_date": _format_theta_dt(start_utc),
+        "end_date": _format_theta_dt(end_utc),
     }
 
-    headers = build_auth_headers()
+    auth, headers = _build_auth()
 
-    async with httpx.AsyncClient(timeout=settings.THETA_TIMEOUT_SEC) as client:
-        resp = await client.get(f"{settings.THETA_BASE_URL}/measurements", params=params, headers=headers)
+    timeout = httpx.Timeout(settings.HTTP_TIMEOUT_SEC)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        r = await client.get(url, params=params, headers=headers, auth=auth)
 
-    if resp.status_code == 401:
+    if r.status_code == 401:
         raise RuntimeError("HTTP 401 from theta: Authorization header missing or invalid.")
-    if resp.status_code >= 400:
-        raise RuntimeError(f"HTTP {resp.status_code} from theta: {resp.text[:300]}")
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code} from theta: {r.text[:500]}")
 
-    data = resp.json()
+    data = r.json()
 
-    # Erwartung: {"items":[...]} oder direkt Liste
-    if isinstance(data, dict) and "items" in data:
-        items = data["items"]
-    else:
-        items = data
-
-    if not isinstance(items, list):
-        raise RuntimeError(f"Unexpected theta response shape: {type(items)}")
-
-    # Items müssen dicts sein
-    return [x for x in items if isinstance(x, dict)]
+    # flexibel: manche APIs liefern {"items":[...]} oder direkt [...]
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("items", "data", "results"):
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
+    # fallback: nichts verwertbares
+    return []
 
 
 async def fetch_loop(queue: asyncio.Queue):
     """
-    Background loop:
-    - nutzt status.fetch_* als Steuerung / Anzeige
-    - cursor läuft immer nur bis 'jetzt' (UTC), nie in die Zukunft
+    Endlosschleife:
+    - status.fetch_enabled steuert
+    - cursor läuft UTC (datetime)
+    - fragt nie in die Zukunft
     """
-    # Defaults
+    # Cursor initial: wenn noch nie gesetzt, "jetzt - window" als Start
+    cursor = datetime.now(timezone.utc) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
+
+    # status defaults
     status.fetch_enabled = getattr(status, "fetch_enabled", False)
     status.fetch_window_sec = getattr(status, "fetch_window_sec", settings.DEFAULT_WINDOW_SEC)
     status.fetch_poll_sec = getattr(status, "fetch_poll_sec", settings.DEFAULT_POLL_SEC)
-
-    # cursor kann (je nach vorherigen Änderungen) str/float/datetime sein -> normalisieren
-    cursor_dt = normalize_cursor(getattr(status, "fetch_cursor_utc", None))
-    status.fetch_cursor_utc = cursor_dt.isoformat()
+    status.fetch_cursor_utc = getattr(status, "fetch_cursor_utc", cursor.isoformat())
 
     while True:
         try:
             if not getattr(status, "fetch_enabled", False):
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 continue
 
             window_sec = int(getattr(status, "fetch_window_sec", settings.DEFAULT_WINDOW_SEC) or settings.DEFAULT_WINDOW_SEC)
             poll_sec = int(getattr(status, "fetch_poll_sec", settings.DEFAULT_POLL_SEC) or settings.DEFAULT_POLL_SEC)
 
-            # cursor aus status wieder aufnehmen (kann string sein)
-            cursor_dt = normalize_cursor(getattr(status, "fetch_cursor_utc", cursor_dt))
-            now_dt = datetime.now(UTC)
+            now_utc = datetime.now(timezone.utc)
+            end_utc = min(cursor + timedelta(seconds=window_sec), now_utc)
 
-            # Nie in die Zukunft fetchen
-            if cursor_dt >= now_dt:
-                await asyncio.sleep(max(1, poll_sec))
+            # wenn wir "caught up" sind: warten
+            if end_utc <= cursor:
+                await asyncio.sleep(poll_sec)
                 continue
 
-            status.last_fetch_at = datetime.now(UTC).timestamp()
-            status.fetch_cursor_utc = cursor_dt.isoformat()
+            # sichtbarer Fortschritt im UI
+            status.fetch_cursor_utc = cursor.isoformat()
 
-            items = await fetch_window(cursor_dt, window_sec)
+            items = await fetch_theta(cursor, end_utc)
 
-            # Enqueue items
-            for item in items:
-                await queue.put(item)
+            # queue füllen
+            for it in items:
+                await queue.put(it)
 
+            status.last_fetch_at = datetime.now(timezone.utc).timestamp()
             status.fetched_total += len(items)
 
-            # Cursor fortschieben: standardmäßig um window_sec
-            next_cursor = cursor_dt + timedelta(seconds=window_sec)
+            # Cursor vorziehen
+            cursor = end_utc
+            status.fetch_cursor_utc = cursor.isoformat()
 
-            # Wenn Theta weniger Daten liefert, kann man optional konservativer sein.
-            # Hier: trotzdem window-basiert fortschieben, aber niemals über "now".
-            if next_cursor > now_dt:
-                next_cursor = now_dt
-
-            cursor_dt = next_cursor
-            status.fetch_cursor_utc = cursor_dt.isoformat()
-
-            await asyncio.sleep(max(1, poll_sec))
+            # wenn wir am "now" sind -> poll
+            if cursor >= now_utc:
+                await asyncio.sleep(poll_sec)
 
         except Exception as e:
             status.fetch_errors += 1
             status.error_logs.append(f"FETCH ERROR: {repr(e)}")
-            # kleines Backoff
+            # backoff kurz
             await asyncio.sleep(2.0)
