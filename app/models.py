@@ -17,7 +17,14 @@ class Measurement(Base):
 
     # Datenfelder (finales JSON)
     serial: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    # ✅ parsed + normalized timestamp (UTC, aware)
+    # (ich lasse nullable=False, weil dein Visualizer / Queries auf Zeit basieren)
     timestamp_sensor: Mapped[object] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+
+    # ✅ RAW timestamp string aus Theta (z.B. "2026-01-05 15:25:48")
+    timestamp_sensor_iso: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+
     probe_id: Mapped[int | None] = mapped_column(Integer)
 
     temp_a: Mapped[float | None] = mapped_column(Float)
