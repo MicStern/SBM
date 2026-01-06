@@ -1,48 +1,32 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8"/>
   <title>Status</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; margin: 20px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
-    th, td { border: 1px solid #ddd; padding: 8px; }
-    th { text-align: left; }
-    .muted { color: #666; }
-    form.inline { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    input, select { padding: 4px 6px; }
-    button { padding: 6px 10px; cursor: pointer; }
-    .grid { display: grid; grid-template-columns: 1fr 2fr; gap: 24px; }
-    .card { border: 1px solid #ddd; padding: 12px; border-radius: 8px; background: #fafafa; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-
-    /* Schwerpunkt-Visualizer */
-    #sv-container { margin-top: 32px; border-top: 1px solid #ddd; padding-top: 16px; }
-    #sv-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
-    #sv-square-wrapper { margin-top: 12px; display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
-    #sv-square { position: relative; width: 260px; height: 260px; border: 2px solid #333; box-sizing: border-box; background: #fff; overflow: hidden; }
-    #sv-square .corner-label { position: absolute; font-size: 12px; background: rgba(255,255,255,0.9); padding: 2px 4px; border-radius: 3px; border: 1px solid #ddd; }
-    #sv-corner-kl { top: 4px; left: 4px; }
-    #sv-corner-kr { top: 4px; right: 4px; }
-    #sv-corner-fl { bottom: 4px; left: 4px; }
-    #sv-corner-fr { bottom: 4px; right: 4px; }
-
-    #sv-dot { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: red; pointer-events: none; transform: translate(-50%, -50%); }
-    #sv-meta { font-size: 13px; margin-top: 8px; }
-    #sv-mapping { display: flex; flex-direction: column; gap: 6px; font-size: 13px; min-width: 220px; }
-    #sv-mapping label { display: flex; justify-content: space-between; gap: 8px; }
-    #sv-mapping select { min-width: 110px; }
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+    .logs { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 260px; overflow: auto; }
+    .row { display:flex; gap:8px; align-items:end; flex-wrap: wrap; }
+    label { font-size: 12px; display:block; }
+    input { padding: 6px; }
+    button { padding: 8px 10px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align:left; }
+    .small { font-size: 12px; color: #666; }
   </style>
 </head>
+
 <body>
   <h1>Status</h1>
+  <p class="small">Theta timezone: <b>{{ theta_timezone }}</b></p>
 
   <div class="grid">
     <div>
       <div class="card">
         <h2>Runtime</h2>
         <ul>
-          <!-- ✅ Berlin-Zeit statt Unix -->
           <li>Fetcher Started: {{ fetch.started_at|ts_berlin }}</li>
           <li>Fetch Cursor (Berlin): {{ fetch.cursor_utc|ts_berlin }}</li>
           <li>Last Fetch: {{ s.last_fetch_at | ts_berlin }}</li>
@@ -55,356 +39,206 @@
         </ul>
       </div>
 
-      <div class="card" style="margin-top:12px;">
-        <h2>Fetcher Steuerung</h2>
-        <p class="muted">
-          Aktuell: enabled={{ fetch.enabled }}, cursor_utc={{ fetch.cursor_utc }},
-          window={{ fetch.window_sec }}s, poll={{ fetch.poll_sec }}s
-        </p>
-
-        <form class="inline" method="post" action="/fetch/start">
-          <label>
-            Startzeit:
-            <input type="datetime-local" name="start_dt" required>
-          </label>
-
-          <label>
-            Fenster (Sek):
-            <select name="window_sec">
-              <option value="30">30</option>
-              <option value="60">60</option>
-              <option value="120">120</option>
-              <option value="300" selected>300</option>
-              <option value="600">600</option>
-              <option value="900">900</option>
-              <option value="1800">1800</option>
-            </select>
-          </label>
-
-          <label>
-            Poll (Sek):
-            <select name="poll_sec">
-              <option value="5">5</option>
-              <option value="10">10</option>
-              <option value="20">20</option>
-              <option value="30" selected>30</option>
-              <option value="60">60</option>
-              <option value="120">120</option>
-            </select>
-          </label>
-
-          <button type="submit">Start</button>
+      <div class="card" style="margin-top:16px;">
+        <h2>Continuous Fetch</h2>
+        <form method="post" action="/fetch/start">
+          <div class="row">
+            <div>
+              <label>Start (Berlin local)</label>
+              <input type="datetime-local" name="start_dt" required>
+            </div>
+            <div>
+              <label>Window (sec)</label>
+              <input type="number" name="window_sec" value="{{ fetch.window_sec }}" min="1">
+            </div>
+            <div>
+              <label>Poll (sec)</label>
+              <input type="number" name="poll_sec" value="{{ fetch.poll_sec }}" min="1">
+            </div>
+            <div>
+              <button type="submit">Start</button>
+            </div>
+          </div>
         </form>
 
-        <form class="inline" method="post" action="/fetch/stop" style="margin-top:8px;">
+        <form method="post" action="/fetch/stop" style="margin-top:8px;">
           <button type="submit">Stop</button>
         </form>
-
-        <p class="muted" style="margin-top:8px;">
-          Hinweis: Startzeit in der Vergangenheit → Catchup läuft schnell bis "jetzt",
-          danach normal im Poll-Rhythmus. Es wird nie in die Zukunft abgefragt.
-        </p>
       </div>
 
-      <div class="card" style="margin-top:12px;">
-        <h2>Fehler-Logs (letzte {{ s.error_logs|length }})</h2>
-        {% if s.error_logs %}
-        <div style="border:1px solid #ccc; padding:10px; max-height:250px; overflow-y:auto; white-space:pre-wrap; background:#fff;">
-          {% for log in s.error_logs %}
-            • {{ log }}<br>
-          {% endfor %}
+      <div class="card" style="margin-top:16px;">
+        <h2>Fetch Once (von/bis)</h2>
+        <p class="small">
+          Dieser Fetch nutzt exakt dieselbe URL-Build-Logik wie der Continuous-Fetch (inkl. %20 Encoding).
+          Start/End werden in <b>{{ theta_timezone }}</b> interpretiert.
+        </p>
+        <form method="post" action="/fetch/once">
+          <div class="row">
+            <div>
+              <label>From (local)</label>
+              <input type="datetime-local" name="start_dt" required>
+            </div>
+            <div>
+              <label>To (local)</label>
+              <input type="datetime-local" name="end_dt" required>
+            </div>
+            <div>
+              <button type="submit">Fetch Once</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <h2>Logs</h2>
+        <div class="logs">
+{% for line in s.error_logs %}
+{{ line }}
+{% endfor %}
         </div>
-        {% else %}
-        <p class="muted">Keine Fehler bisher.</p>
-        {% endif %}
       </div>
     </div>
 
     <div>
       <div class="card">
-        <h2>Measurement Groups ({{ groups|length }})</h2>
+        <h2>Groups</h2>
         <table>
           <thead>
             <tr>
-              <th>label_uid</th>
+              <th>Label UID</th>
               <th>Count</th>
               <th>Last Seen</th>
               <th>Label</th>
-              <th>Set Label</th>
             </tr>
           </thead>
           <tbody>
-          {% for g in groups %}
+            {% for g in groups %}
             <tr>
-              <td>{{ g.label_uid }}</td>
+              <td><a href="#" onclick="loadFrames('{{ g.label_uid }}'); return false;">{{ g.label_uid }}</a></td>
               <td>{{ g.count }}</td>
-              <td>{{ g.last_seen }}</td>
-              <td>{{ g.label or "" }}</td>
+              <td>{{ g.last_seen|ts_berlin }}</td>
               <td>
-                <form class="inline" method="post" action="/label">
+                <form method="post" action="/label">
                   <input type="hidden" name="label_uid" value="{{ g.label_uid }}">
-                  <input type="text" name="label" placeholder="Label eingeben" value="{{ g.label or '' }}">
-                  <button type="submit">Speichern</button>
+                  <input name="label" value="{{ g.label or '' }}" style="width: 180px;">
+                  <button type="submit">Save</button>
                 </form>
               </td>
             </tr>
-          {% else %}
-            <tr><td colspan="5" class="muted">Noch keine Gruppen.</td></tr>
-          {% endfor %}
+            {% endfor %}
           </tbody>
         </table>
       </div>
+
+      <div class="card" style="margin-top:16px;">
+        <h2>Weight Visualization</h2>
+        <p class="small">Klicke auf eine Group (links), um Frames zu laden.</p>
+
+        <canvas id="canvas" width="420" height="420" style="border:1px solid #ddd; border-radius:8px;"></canvas>
+
+        <div class="row" style="margin-top:10px;">
+          <button onclick="togglePlay()">Play/Pause</button>
+          <span class="small" id="frameInfo">No data loaded</span>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Schwerpunkt-Visualizer -->
-  <div id="sv-container">
-    <h2>Schwerpunkt-Visualizer (bed-center)</h2>
+<script>
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  const frameInfo = document.getElementById("frameInfo");
 
-    <div id="sv-controls">
-      <label>
-        Group / label_uid:
-        <select id="sv-group-select">
-          <option value="">-- auswählen --</option>
-          {% for g in groups %}
-          <option value="{{ g.label_uid }}">{{ g.label_uid }}</option>
-          {% endfor %}
-        </select>
-      </label>
+  let frames = [];
+  let frameIndex = 0;
+  let playing = false;
+  let timer = null;
 
-      <button id="sv-load-btn">Laden</button>
+  const positions = {
+    a: {x:-1, y:-1},
+    b: {x: 1, y:-1},
+    c: {x:-1, y: 1},
+    d: {x: 1, y: 1},
+  };
 
-      <button id="sv-play-btn">Play</button>
-      <button id="sv-pause-btn">Pause</button>
+  const mapping = {
+    a: "weight_a",
+    b: "weight_b",
+    c: "weight_c",
+    d: "weight_d",
+  };
 
-      <span id="sv-status" class="muted"></span>
-    </div>
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function toNumber(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
-    <div id="sv-square-wrapper">
-      <div id="sv-square">
-        <div id="sv-dot"></div>
-        <div class="corner-label" id="sv-corner-kl">KL (Kopf-Links)</div>
-        <div class="corner-label" id="sv-corner-kr">KR (Kopf-Rechts)</div>
-        <div class="corner-label" id="sv-corner-fl">FL (Fuß-Links)</div>
-        <div class="corner-label" id="sv-corner-fr">FR (Fuß-Rechts)</div>
-      </div>
+  function computeCenter(frame) {
+    let sumW = 0, sumX = 0, sumY = 0;
 
-      <div id="sv-mapping">
-        <strong>Zuordnung Gewicht → Bettfuß</strong>
-        <label>
-          KL
-          <select id="sv-map-kl">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
-        <label>
-          KR
-          <select id="sv-map-kr">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
-        <label>
-          FL
-          <select id="sv-map-fl">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
-        <label>
-          FR
-          <select id="sv-map-fr">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
+    for (const corner of Object.keys(mapping)) {
+      const key = mapping[corner];
+      const w = Math.abs(toNumber(frame[key]));  // Betrag
+      if (w === 0) continue;
 
-        <p class="muted">
-          Falls ein Gewicht fehlt, wird es als 0 behandelt.
-        </p>
-      </div>
-    </div>
+      const pos = positions[corner];
+      sumW += w;
+      sumX += w * pos.x;
+      sumY += w * pos.y;
+    }
 
-    <div id="sv-meta" class="muted">
-      Schwerpunkt wird aus relativen Belastungen berechnet.
-    </div>
-  </div>
+    if (sumW === 0) return {x:0, y:0};
+    return { x: clamp(sumX / sumW, -1, 1), y: clamp(sumY / sumW, -1, 1) };
+  }
 
-  <script>
-    (function() {
-      const groupSelect = document.getElementById('sv-group-select');
-      const loadBtn = document.getElementById('sv-load-btn');
-      const playBtn = document.getElementById('sv-play-btn');
-      const pauseBtn = document.getElementById('sv-pause-btn');
-      const statusSpan = document.getElementById('sv-status');
-      const square = document.getElementById('sv-square');
-      const dot = document.getElementById('sv-dot');
+  function draw(frame) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const mapKL = document.getElementById('sv-map-kl');
-      const mapKR = document.getElementById('sv-map-kr');
-      const mapFL = document.getElementById('sv-map-fl');
-      const mapFR = document.getElementById('sv-map-fr');
+    // border box
+    ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
 
-      let frames = [];
-      let currentIndex = 0;
-      let timerId = null;
+    const c = computeCenter(frame);
 
-      // ✅ Default-Mapping passend zur finalen JSON (weight_a etc.)
-      mapKL.value = "weight_a";
-      mapKR.value = "weight_b";
-      mapFL.value = "weight_c";
-      mapFR.value = "weight_d";
+    const cx = (canvas.width / 2) + c.x * (canvas.width / 2 - 40);
+    const cy = (canvas.height / 2) + c.y * (canvas.height / 2 - 40);
 
-      function getMapping() {
-        return { KL: mapKL.value, KR: mapKR.value, FL: mapFL.value, FR: mapFR.value };
-      }
+    // draw dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+    ctx.fill();
 
-      const positions = {
-        KL: { x: -1, y: -1 },
-        KR: { x:  1, y: -1 },
-        FL: { x: -1, y:  1 },
-        FR: { x:  1, y:  1 },
-      };
+    const ts = frame.timestamp_sensor_iso || frame.timestamp || "";
+    frameInfo.textContent = `Frame ${frameIndex+1}/${frames.length}  ${ts}`;
+  }
 
-      function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function step() {
+    if (!frames.length) return;
+    draw(frames[frameIndex]);
+    frameIndex = (frameIndex + 1) % frames.length;
+  }
 
-      function toNumber(v) {
-        // Negativwerte/0 sind ok – aber NaN/undefined -> 0
-        const n = Number(v);
-        return (Number.isFinite(n)) ? n : 0;
-      }
+  function togglePlay() {
+    playing = !playing;
+    if (playing) {
+      if (timer) clearInterval(timer);
+      timer = setInterval(step, 150);
+    } else {
+      if (timer) clearInterval(timer);
+      timer = null;
+    }
+  }
 
-      function computeCenter(frame, mapping) {
-        let sumW = 0, sumX = 0, sumY = 0;
-      
-        for (const corner of Object.keys(mapping)) {
-          const key = mapping[corner];
-          if (!key || key === "none") continue;
-      
-          const weight = Math.abs(toNumber(frame[key])); // ✅ Betrag
-          if (weight === 0) continue;
-      
-          const pos = positions[corner];
-          sumW += weight;
-          sumX += weight * pos.x;
-          sumY += weight * pos.y;
-        }
-      
-        if (sumW === 0) return { x: 0, y: 0 };
-      
-        const x = sumX / sumW;
-        const y = sumY / sumW;
-      
-        return { x: clamp(x, -1, 1), y: clamp(y, -1, 1) };
-      }
+  async function loadFrames(labelUid) {
+    const res = await fetch(`/group_frames?label_uid=${encodeURIComponent(labelUid)}`);
+    const data = await res.json();
+    frames = data.frames || [];
+    frameIndex = 0;
 
+    if (frames.length) {
+      draw(frames[0]);
+    } else {
+      frameInfo.textContent = "No frames returned";
+    }
+  }
+</script>
 
-      function renderFrame(idx) {
-        if (!frames.length) {
-          statusSpan.textContent = "Keine Frames geladen.";
-          dot.style.left = "50%";
-          dot.style.top = "50%";
-          return;
-        }
-        if (idx < 0 || idx >= frames.length) return;
-
-        const frame = frames[idx];
-        const center = computeCenter(frame, getMapping());
-
-        const rect = square.getBoundingClientRect();
-        const size = rect.width;
-
-        const xNorm = (center.x + 1) / 2;
-        const yNorm = (center.y + 1) / 2;
-
-        dot.style.left = (xNorm * size) + "px";
-        dot.style.top = (yNorm * size) + "px";
-
-        const t = frame.timestamp_sensor_iso || frame.timestamp || "?";
-        statusSpan.textContent = `Frame ${idx + 1}/${frames.length} (t=${t})`;
-      }
-
-      function stopPlayback() {
-        if (timerId !== null) {
-          clearInterval(timerId);
-          timerId = null;
-        }
-      }
-
-      async function loadGroup() {
-        stopPlayback();
-        currentIndex = 0;
-
-        const uid = groupSelect.value;
-        if (!uid) {
-          statusSpan.textContent = "Bitte zuerst eine Group auswählen.";
-          return;
-        }
-
-        statusSpan.textContent = "Lade Daten ...";
-        try {
-          const resp = await fetch(`/group_frames?label_uid=${encodeURIComponent(uid)}`);
-          if (!resp.ok) {
-            statusSpan.textContent = `Fehler beim Laden (${resp.status})`;
-            return;
-          }
-          const data = await resp.json();
-          frames = data.frames || [];
-          if (!frames.length) {
-            statusSpan.textContent = "Keine Frames gefunden.";
-            renderFrame(0);
-            return;
-          }
-          statusSpan.textContent = `Frames geladen: ${frames.length}`;
-          renderFrame(0);
-        } catch (e) {
-          console.error(e);
-          statusSpan.textContent = "Fehler beim Laden (siehe Konsole).";
-        }
-      }
-
-      function startPlayback() {
-        if (!frames.length) {
-          statusSpan.textContent = "Keine Frames geladen – bitte zuerst 'Laden' klicken.";
-          return;
-        }
-        if (timerId !== null) return;
-
-        timerId = setInterval(() => {
-          currentIndex = (currentIndex + 1) % frames.length;
-          renderFrame(currentIndex);
-        }, 500);
-      }
-
-      loadBtn.addEventListener('click', (e) => { e.preventDefault(); loadGroup(); });
-      playBtn.addEventListener('click', (e) => { e.preventDefault(); startPlayback(); });
-      pauseBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        stopPlayback();
-        statusSpan.textContent = frames.length ? `Pause bei Frame ${currentIndex + 1}/${frames.length}` : "Pause.";
-      });
-
-      // Re-render wenn Mapping geändert wird
-      mapKL.addEventListener('change', () => renderFrame(currentIndex));
-      mapKR.addEventListener('change', () => renderFrame(currentIndex));
-      mapFL.addEventListener('change', () => renderFrame(currentIndex));
-      mapFR.addEventListener('change', () => renderFrame(currentIndex));
-
-      window.addEventListener('load', () => renderFrame(0));
-    })();
-  </script>
 </body>
 </html>
