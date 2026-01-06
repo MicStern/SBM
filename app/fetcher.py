@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -10,19 +13,52 @@ from .settings import settings
 from .status import status
 
 
-def _iso_utc(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+def _theta_url() -> str:
+    return settings.THETA_BASE_URL.rstrip("/") + "/" + settings.THETA_PROBE_PATH.lstrip("/")
 
 
-def _parse_iso_utc(s: str | None) -> datetime | None:
-    if not s:
+def _theta_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(settings.THETA_TIMEZONE)
+    except Exception:
+        return ZoneInfo("Europe/Berlin")
+
+
+def _format_theta_dt(dt_utc: datetime) -> str:
+    """
+    Theta erwartet einen String ohne TZ:
+    "YYYY-MM-DD HH:MM:SS"
+    Wir formatieren in settings.THETA_TIMEZONE.
+    """
+    tz = _theta_tz()
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    return dt_utc.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_auth() -> tuple[httpx.Auth | None, dict[str, str]]:
+    headers: dict[str, str] = {"Accept": "application/json"}
+    auth_type = (settings.AUTH_TYPE or "none").lower().strip()
+
+    if auth_type == "basic":
+        if not settings.AUTH_USERNAME or not settings.AUTH_PASSWORD:
+            raise RuntimeError("AUTH_TYPE=basic aber AUTH_USERNAME/AUTH_PASSWORD fehlen in .env")
+        return httpx.BasicAuth(settings.AUTH_USERNAME, settings.AUTH_PASSWORD), headers
+
+    if auth_type == "bearer":
+        if not settings.AUTH_BEARER_TOKEN:
+            raise RuntimeError("AUTH_TYPE=bearer aber AUTH_BEARER_TOKEN fehlt in .env")
+        headers["Authorization"] = f"Bearer {settings.AUTH_BEARER_TOKEN}"
+        return None, headers
+
+    return None, headers
+
+
+def _parse_cursor_iso(value: str | None) -> datetime | None:
+    if not value:
         return None
     try:
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
@@ -30,128 +66,105 @@ def _parse_iso_utc(s: str | None) -> datetime | None:
         return None
 
 
-def _auth_headers() -> dict[str, str]:
+def _build_theta_request_url(start_utc: datetime, end_utc: datetime) -> str:
     """
-    AUTH_TYPE:
-      - "basic": nutzt httpx BasicAuth (nicht header hier)
-      - "bearer": Authorization: Bearer <token>
-      - "none": nichts
+    CRITICAL FIX:
+    Wir bauen den Querystring selbst und encoden mit quote(),
+    damit Leerzeichen IMMER als %20 rausgehen (nicht als '+').
     """
-    auth_type = (getattr(settings, "AUTH_TYPE", "none") or "none").lower().strip()
-    if auth_type == "bearer":
-        token = (getattr(settings, "AUTH_TOKEN", "") or "").strip()
-        if token:
-            return {"Authorization": f"Bearer {token}"}
-    return {}
+    base = _theta_url()
+    start_s = _format_theta_dt(start_utc)
+    end_s = _format_theta_dt(end_utc)
+
+    # quote encodiert Space als %20
+    # safe=":-_" lässt Doppelpunkte/Minus/Underscore stehen (lesbar)
+    start_q = quote(start_s, safe=":-_")
+    end_q = quote(end_s, safe=":-_")
+
+    return f"{base}?start_date={start_q}&end_date={end_q}"
 
 
-def _basic_auth() -> httpx.BasicAuth | None:
-    auth_type = (getattr(settings, "AUTH_TYPE", "none") or "none").lower().strip()
-    if auth_type != "basic":
-        return None
-    user = (getattr(settings, "AUTH_USERNAME", "") or "").strip()
-    pwd = (getattr(settings, "AUTH_PASSWORD", "") or "").strip()
-    if not user or not pwd:
-        return None
-    return httpx.BasicAuth(user, pwd)
+async def fetch_theta(start_utc: datetime, end_utc: datetime) -> list[dict[str, Any]]:
+    url = _build_theta_request_url(start_utc, end_utc)
 
+    auth, headers = _build_auth()
+    timeout = httpx.Timeout(settings.HTTP_TIMEOUT_SEC)
 
-async def fetch_theta(start_utc: datetime, end_utc: datetime) -> list[dict]:
-    """
-    Ruft Theta so ab, wie du es willst:
+    # Debug: was fragen wir wirklich ab?
+    status.error_logs.appendleft(f"FETCH REQ: {url}")
 
-    https://theta-v2-server.5micron.net/basic-api/probes/hsl
-      ?start_date=YYYY-MM-DD HH:MM:SS
-      &end_date=YYYY-MM-DD HH:MM:SS
-    """
-    base = (getattr(settings, "THETA_BASE_URL", "https://theta-v2-server.5micron.net") or "").rstrip("/")
-    path = (getattr(settings, "THETA_PATH", "/basic-api/probes/hsl") or "").strip()
-    if not path.startswith("/"):
-        path = "/" + path
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        r = await client.get(url, headers=headers, auth=auth)
 
-    # Theta erwartet "YYYY-MM-DD HH:MM:SS" (mit SPACE)
-    start_str = start_utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    end_str = end_utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if r.status_code == 401:
+        raise RuntimeError("HTTP 401 from theta: Authorization header missing or invalid.")
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code} from theta: {r.text[:500]}")
 
-    url = f"{base}{path}"
-    params = {"start_date": start_str, "end_date": end_str}
+    data = r.json()
 
-    timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
-
-    headers = _auth_headers()
-    auth = _basic_auth()
-
-    async with httpx.AsyncClient(timeout=timeout, headers=headers, auth=auth) as client:
-        r = await client.get(url, params=params)
-        if r.status_code == 401:
-            raise RuntimeError("HTTP 401 from theta: Authorization header missing or invalid.")
-        if r.status_code >= 400:
-            raise RuntimeError(f"HTTP {r.status_code} from theta: {r.text[:300]}")
-        data = r.json()
-
-    # ✅ Hier musst du ggf. anpassen, je nachdem wie Theta liefert.
-    # Wir nehmen an: data ist Liste oder {"items":[...]}.
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        if "items" in data and isinstance(data["items"], list):
-            return data["items"]
-        if "data" in data and isinstance(data["data"], list):
-            return data["data"]
-
-    # fallback: unbekanntes format
+        for k in ("items", "data", "results"):
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
     return []
 
 
 async def fetch_loop(queue: asyncio.Queue):
-    """
-    Background loop:
-    - liest status.fetch_* (UI)
-    - holt in Windows Daten von Theta
-    - put() in queue
-    - updated status.fetch_cursor_utc laufend => UI zeigt echten Fortschritt
-    """
-
-    # Defaults
     status.fetch_enabled = getattr(status, "fetch_enabled", False)
-    status.fetch_window_sec = getattr(status, "fetch_window_sec", getattr(settings, "DEFAULT_WINDOW_SEC", 1800))
-    status.fetch_poll_sec = getattr(status, "fetch_poll_sec", getattr(settings, "DEFAULT_POLL_SEC", 30))
-    status.fetch_cursor_utc = getattr(status, "fetch_cursor_utc", None)
-    status.fetch_started_at = getattr(status, "fetch_started_at", None)
+    status.fetch_window_sec = getattr(status, "fetch_window_sec", settings.DEFAULT_WINDOW_SEC)
+    status.fetch_poll_sec = getattr(status, "fetch_poll_sec", settings.DEFAULT_POLL_SEC)
 
-    # interner cursor (falls UI noch keinen gesetzt hat)
-    cursor = datetime.now(timezone.utc) - timedelta(seconds=int(getattr(settings, "DEFAULT_WINDOW_SEC", 1800)))
-    if status.fetch_cursor_utc:
-        desired = _parse_iso_utc(status.fetch_cursor_utc)
-        if desired:
-            cursor = desired
-    status.fetch_cursor_utc = _iso_utc(cursor)
+    cursor: datetime | None = None
+    last_status_cursor_iso: str | None = None
+    last_enabled: bool = bool(getattr(status, "fetch_enabled", False))
 
     while True:
         try:
-            if not getattr(status, "fetch_enabled", False):
+            enabled = bool(getattr(status, "fetch_enabled", False))
+            if not enabled:
+                last_enabled = False
                 await asyncio.sleep(0.2)
                 continue
 
-            # ✅ Cursor override: UI gewinnt (damit Startzeit wirklich gilt)
-            desired = _parse_iso_utc(getattr(status, "fetch_cursor_utc", None))
-            if desired and abs((desired - cursor).total_seconds()) > 0.5:
-                cursor = desired
-                status.error_logs.append(f"FETCH CURSOR OVERRIDE: cursor={_iso_utc(cursor)}")
+            status_cursor_iso = getattr(status, "fetch_cursor_utc", None)
 
-            window_sec = int(getattr(status, "fetch_window_sec", getattr(settings, "DEFAULT_WINDOW_SEC", 1800)) or 1800)
-            poll_sec = int(getattr(status, "fetch_poll_sec", getattr(settings, "DEFAULT_POLL_SEC", 30)) or 30)
+            if cursor is None:
+                parsed = _parse_cursor_iso(status_cursor_iso)
+                if parsed is None:
+                    parsed = datetime.now(timezone.utc) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
+                cursor = parsed
+                last_status_cursor_iso = status_cursor_iso
+
+            if (not last_enabled) or (status_cursor_iso and status_cursor_iso != last_status_cursor_iso):
+                parsed = _parse_cursor_iso(status_cursor_iso)
+                if parsed is not None:
+                    cursor = parsed
+                else:
+                    cursor = datetime.now(timezone.utc) - timedelta(seconds=settings.DEFAULT_WINDOW_SEC)
+
+                last_status_cursor_iso = status_cursor_iso
+                last_enabled = True
+
+            window_sec = int(getattr(status, "fetch_window_sec", settings.DEFAULT_WINDOW_SEC) or settings.DEFAULT_WINDOW_SEC)
+            poll_sec = int(getattr(status, "fetch_poll_sec", settings.DEFAULT_POLL_SEC) or settings.DEFAULT_POLL_SEC)
 
             now_utc = datetime.now(timezone.utc)
+
+            if cursor > now_utc:
+                cursor = now_utc
+
             end_utc = min(cursor + timedelta(seconds=window_sec), now_utc)
 
-            # nie in die Zukunft
             if end_utc <= cursor:
+                status.fetch_cursor_utc = cursor.isoformat()
                 await asyncio.sleep(poll_sec)
                 continue
 
-            # Fortschritt für UI
-            status.fetch_cursor_utc = _iso_utc(cursor)
+            status.fetch_cursor_utc = cursor.isoformat()
 
             items = await fetch_theta(cursor, end_utc)
 
@@ -161,15 +174,13 @@ async def fetch_loop(queue: asyncio.Queue):
             status.last_fetch_at = datetime.now(timezone.utc).timestamp()
             status.fetched_total += len(items)
 
-            # cursor nachziehen
             cursor = end_utc
-            status.fetch_cursor_utc = _iso_utc(cursor)
+            status.fetch_cursor_utc = cursor.isoformat()
 
-            # wenn catchup fertig -> poll
             if cursor >= now_utc:
                 await asyncio.sleep(poll_sec)
 
         except Exception as e:
             status.fetch_errors += 1
-            status.error_logs.append(f"FETCH ERROR: {repr(e)}")
+            status.error_logs.appendleft(f"FETCH ERROR: {repr(e)}")
             await asyncio.sleep(2.0)
