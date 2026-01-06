@@ -65,7 +65,7 @@ queue: asyncio.Queue | None = None
 # -------- Fetcher runtime-state (in-memory) --------
 fetch_state = {
     "enabled": False,
-    "cursor_utc": None,   # datetime in UTC
+    "cursor_utc": None,   # datetime in UTC (aware)
     "window_sec": 300,
     "poll_sec": 30,
 }
@@ -84,10 +84,10 @@ async def saver_loop(q: asyncio.Queue):
         item = await q.get()
         try:
             await save_item(item)
-            await status.set_time("last_save_at")
+            status.last_save_at = datetime.now(tz=timezone.utc).timestamp()
         except Exception as e:
-            await status.inc("save_errors")
-            await status.log_error(f'SAVE ERROR: {repr(e)}')
+            status.save_errors += 1
+            status.error_logs.appendleft(f"SAVE ERROR: {repr(e)}")
         finally:
             q.task_done()
 
@@ -105,8 +105,8 @@ async def startup():
     for _ in range(settings.SAVE_CONCURRENCY):
         asyncio.create_task(saver_loop(queue))
 
-    # Startzeit setzen (für Runtime)
-    await status.set_time("started_at")
+    # Runtime start
+    status.started_at = datetime.now(tz=timezone.utc).timestamp()
 
 
 @app.get("/healthz")
@@ -128,7 +128,6 @@ async def status_json():
             "queue_size": queue.qsize() if queue else 0,
             "error_logs": list(status.error_logs),
 
-            # fetch-state (damit du es auch via JSON prüfen kannst)
             "fetch_enabled": fetch_state["enabled"],
             "fetch_cursor_utc": fetch_state["cursor_utc"].isoformat() if fetch_state["cursor_utc"] else None,
             "fetch_window_sec": fetch_state["window_sec"],
@@ -144,28 +143,29 @@ async def fetch_start(
     poll_sec: int = Form(30),
 ):
     """
-    Startet den Fetcher mit:
+    Startet den Fetcher:
     - Startzeit aus datetime-local => als Europe/Berlin interpretieren
     - dann nach UTC umrechnen
+    - fetch_loop() bekommt KEINE kwargs, sondern liest Config aus status/fetch_state
     """
     global _fetch_task
 
     if queue is None:
         return PlainTextResponse("Queue not initialized", status_code=500)
 
-    # datetime-local liefert z.B. "2025-12-10T08:00"
+    # datetime-local liefert z.B. "2026-01-05T10:00"
     dt_local = datetime.fromisoformat(start_dt)  # naive
     dt_local = dt_local.replace(tzinfo=BERLIN_TZ)
-    dt_utc = dt_local.astimezone(timezone.utc)
+    dt_utc = _ensure_utc(dt_local.astimezone(timezone.utc))
 
     fetch_state["enabled"] = True
-    fetch_state["cursor_utc"] = _ensure_utc(dt_utc)
+    fetch_state["cursor_utc"] = dt_utc
     fetch_state["window_sec"] = int(window_sec)
     fetch_state["poll_sec"] = int(poll_sec)
 
-    # Status-Objekt (für Template / Debug)
+    # Werte so ablegen, wie dein status.html sie anzeigt
     status.fetch_enabled = True
-    status.fetch_cursor_utc = fetch_state["cursor_utc"].isoformat()
+    status.fetch_cursor_utc = dt_utc.isoformat()
     status.fetch_window_sec = fetch_state["window_sec"]
     status.fetch_poll_sec = fetch_state["poll_sec"]
 
@@ -177,16 +177,10 @@ async def fetch_start(
         except Exception:
             pass
 
-    _fetch_task = asyncio.create_task(
-        fetch_loop(
-            queue=queue,
-            start_cursor_utc=fetch_state["cursor_utc"],
-            window_sec=fetch_state["window_sec"],
-            poll_sec=fetch_state["poll_sec"],
-        )
-    )
+    # WICHTIG: keine kwargs -> nur queue
+    _fetch_task = asyncio.create_task(fetch_loop(queue))
 
-    await status.log_error(
+    status.error_logs.appendleft(
         f"FETCH START: cursor={status.fetch_cursor_utc} window={status.fetch_window_sec}s poll={status.fetch_poll_sec}s"
     )
 
@@ -208,7 +202,7 @@ async def fetch_stop():
             pass
     _fetch_task = None
 
-    await status.log_error("FETCH STOP")
+    status.error_logs.appendleft("FETCH STOP")
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -222,7 +216,6 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
     label_val = label.strip() or None
 
     async with SessionLocal() as session:
-        # Group upsert (falls group noch nicht existiert)
         grp_stmt = (
             pg_insert(MeasurementGroup)
             .values(label_uid=label_uid, label=label_val, measurement_ids=[])
@@ -233,7 +226,6 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
         )
         await session.execute(grp_stmt)
 
-        # Measurements der Gruppe updaten
         await session.execute(
             update(Measurement)
             .where(Measurement.label_uid == label_uid)
@@ -268,7 +260,6 @@ async def group_frames(label_uid: str):
                     if m.timestamp_sensor
                     else (m.timestamp_sensor_iso or None)
                 ),
-                # passend zu deinem status.html JS: weightA/B/C/D
                 "weightA": float(m.weight_a or 0.0),
                 "weightB": float(m.weight_b or 0.0),
                 "weightC": float(m.weight_c or 0.0),
@@ -281,12 +272,6 @@ async def group_frames(label_uid: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def status_page(request: Request):
-    """
-    Statusseite:
-    - Runtime
-    - Gruppenübersicht
-    - Fetch-Status (für status.html: fetch.enabled / fetch.cursor_utc / fetch.window_sec / fetch.poll_sec)
-    """
     fetch = {
         "enabled": bool(fetch_state["enabled"]),
         "cursor_utc": fetch_state["cursor_utc"].isoformat() if fetch_state["cursor_utc"] else None,
@@ -340,6 +325,6 @@ async def status_page(request: Request):
             "s": status,
             "queue_size": queue.qsize() if queue else 0,
             "groups": groups,
-            "fetch": fetch,  # ✅ status.html braucht das
+            "fetch": fetch,
         },
     )
