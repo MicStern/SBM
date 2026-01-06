@@ -1,21 +1,17 @@
 import asyncio
+import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import (
-    HTMLResponse,
-    JSONResponse,
-    PlainTextResponse,
-    RedirectResponse,
-)
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .analysis import analysis_loop
 from .db import SessionLocal, engine
 from .fetcher import fetch_loop
-from .models import Base, Record, PacketLabel, FetchConfig
+from .models import Base, Measurement, MeasurementGroup, FetchConfig
 from .settings import settings
 from .status import status
 from .storage import save_item
@@ -38,13 +34,9 @@ async def saver_loop(queue: asyncio.Queue):
 
 async def get_or_create_fetch_config() -> FetchConfig:
     async with SessionLocal() as session:
-        cfg = (
-            await session.execute(select(FetchConfig).where(FetchConfig.id == 1))
-        ).scalar_one_or_none()
-
+        cfg = (await session.execute(select(FetchConfig).where(FetchConfig.id == 1))).scalar_one_or_none()
         if cfg:
             return cfg
-
         cfg = FetchConfig(
             id=1,
             enabled=False,
@@ -59,17 +51,13 @@ async def get_or_create_fetch_config() -> FetchConfig:
 
 async def update_fetch_config(**kwargs) -> None:
     async with SessionLocal() as session:
-        cfg = (
-            await session.execute(select(FetchConfig).where(FetchConfig.id == 1))
-        ).scalar_one_or_none()
+        cfg = (await session.execute(select(FetchConfig).where(FetchConfig.id == 1))).scalar_one_or_none()
         if not cfg:
             cfg = FetchConfig(id=1)
             session.add(cfg)
             await session.flush()
-
         for k, v in kwargs.items():
             setattr(cfg, k, v)
-
         await session.commit()
 
 
@@ -109,14 +97,13 @@ async def status_json():
             "queue_size": queue.qsize() if queue else 0,
             "analysis": analysis_result,
             "error_logs": list(status.error_logs),
+            "debug": getattr(status, "debug", {}),
             "fetch_config": {
                 "enabled": cfg.enabled,
                 "cursor": cfg.cursor.isoformat() if cfg.cursor else None,
                 "window_seconds": cfg.window_seconds,
                 "poll_seconds": cfg.poll_seconds,
             },
-            # optional debug keys, wenn status.set() existiert:
-            "debug": getattr(status, "debug", None),
         }
     )
 
@@ -127,13 +114,10 @@ async def fetch_start(
     window_seconds: int = Form(300),
     poll_seconds: int = Form(30),
 ):
-    """
-    Startzeit setzen und Fetch aktivieren.
-    datetime-local liefert keine TZ -> wir lassen es bewusst NAIV,
-    weil die API genau 'YYYY-MM-DD HH:MM:SS' ohne TZ erwartet.
-    """
-    dt = datetime.fromisoformat(start_dt)
-    dt = dt.replace(tzinfo=None)
+    tz = ZoneInfo(settings.TIMEZONE)
+
+    # datetime-local => naive, wir interpretieren als Europe/Berlin
+    dt = datetime.fromisoformat(start_dt).replace(tzinfo=tz)
 
     await update_fetch_config(
         enabled=True,
@@ -143,9 +127,8 @@ async def fetch_start(
     )
 
     await status.log_error(
-        f"FETCH START: cursor={dt.strftime('%Y-%m-%d %H:%M:%S')} window={window_seconds}s poll={poll_seconds}s"
+        f"FETCH START: cursor={dt.isoformat()} window={window_seconds}s poll={poll_seconds}s"
     )
-
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -163,84 +146,47 @@ async def fetch_reset():
     return RedirectResponse(url="/", status_code=303)
 
 
-@app.get("/packets.json")
-async def packets_json():
+@app.get("/groups.json")
+async def groups_json():
     async with SessionLocal() as session:
         q = (
             select(
-                Record.packet_id,
-                func.count(Record.id).label("count"),
-                func.max(Record.created_at).label("last_seen"),
-                PacketLabel.label,
+                MeasurementGroup.label_uid,
+                func.cardinality(MeasurementGroup.measurement_ids).label("count"),
             )
-            .join(PacketLabel, PacketLabel.packet_id == Record.packet_id, isouter=True)
-            .group_by(Record.packet_id, PacketLabel.label)
-            .order_by(func.max(Record.created_at).desc())
+            .order_by(func.cardinality(MeasurementGroup.measurement_ids).desc())
         )
         rows = (await session.execute(q)).all()
 
-    result = []
-    for pid, cnt, last_seen, label in rows:
-        if pid is None:
-            continue
-        result.append(
-            {
-                "packet_id": pid,
-                "count": cnt,
-                "last_seen": last_seen.isoformat() if last_seen else None,
-                "label": label,
-            }
-        )
-    return JSONResponse(result)
-
-
-@app.post("/label")
-async def set_label(packet_id: str = Form(...), label: str = Form("")):
-    label_val = label.strip() or None
-    async with SessionLocal() as session:
-        stmt = pg_insert(PacketLabel).values(packet_id=packet_id, label=label_val)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[PacketLabel.packet_id],
-            set_={"label": label_val},
-        )
-        await session.execute(stmt)
-        await session.commit()
-    return RedirectResponse(url="/", status_code=303)
+    return JSONResponse(
+        [{"label_uid": uid, "count": cnt or 0} for (uid, cnt) in rows]
+    )
 
 
 @app.get("/packet_weights")
 async def packet_weights(packet_id: str):
+    """
+    Visualizer Frames: alle Messungen der Gruppe (label_uid),
+    sortiert nach timestamp_sensor.
+    """
     async with SessionLocal() as session:
         q = (
-            select(Record)
-            .where(Record.packet_id == packet_id)
-            .order_by(Record.created_at.asc())
+            select(Measurement)
+            .where(Measurement.label_uid == packet_id)
+            .order_by(Measurement.timestamp_sensor.asc().nulls_last(), Measurement.id.asc())
         )
-        records = (await session.execute(q)).scalars().all()
-
-    def get_weight(payload: dict, key: str) -> float:
-        v = payload.get(key)
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return 0.0
+        rows = (await session.execute(q)).scalars().all()
 
     frames = []
-    for rec in records:
-        payload = rec.payload or {}
-        ts = (
-            payload.get("timestamp_sensor_iso")
-            or payload.get("dateTime")
-            or (rec.created_at.isoformat() if rec.created_at else None)
-        )
-
+    for m in rows:
+        ts = m.timestamp_sensor.strftime("%Y-%m-%d %H:%M:%S") if m.timestamp_sensor else None
         frames.append(
             {
                 "timestamp": ts,
-                "weightA": get_weight(payload, "weight_a"),
-                "weightB": get_weight(payload, "weight_b"),
-                "weightC": get_weight(payload, "weight_c"),
-                "weightD": get_weight(payload, "weight_d"),
+                "weightA": float(m.weight_a or 0.0),
+                "weightB": float(m.weight_b or 0.0),
+                "weightC": float(m.weight_c or 0.0),
+                "weightD": float(m.weight_d or 0.0),
             }
         )
 
@@ -252,31 +198,49 @@ async def status_page(request: Request):
     cfg = await get_or_create_fetch_config()
 
     async with SessionLocal() as session:
-        q = (
+        # Gruppenliste + Count
+        q_groups = (
             select(
-                Record.packet_id,
-                func.count(Record.id).label("count"),
-                func.max(Record.created_at).label("last_seen"),
-                PacketLabel.label,
+                MeasurementGroup.label_uid,
+                func.cardinality(MeasurementGroup.measurement_ids).label("count"),
             )
-            .join(PacketLabel, PacketLabel.packet_id == Record.packet_id, isouter=True)
-            .group_by(Record.packet_id, PacketLabel.label)
-            .order_by(func.max(Record.created_at).desc())
+            .order_by(func.cardinality(MeasurementGroup.measurement_ids).desc())
+            .limit(200)
         )
-        rows = (await session.execute(q)).all()
+        groups_rows = (await session.execute(q_groups)).all()
 
-    packets = []
-    for pid, cnt, last_seen, label in rows:
-        if pid is None:
-            continue
-        packets.append(
+        # optional: label + last_seen aus measurements aggregiert (praktisch fürs UI)
+        group_uids = [uid for (uid, _) in groups_rows]
+        labels_map = {}
+        last_seen_map = {}
+
+        if group_uids:
+            q_meta = (
+                select(
+                    Measurement.label_uid,
+                    func.max(Measurement.timestamp_sensor).label("last_seen"),
+                    func.max(Measurement.label).label("label"),
+                )
+                .where(Measurement.label_uid.in_(group_uids))
+                .group_by(Measurement.label_uid)
+            )
+            meta_rows = (await session.execute(q_meta)).all()
+            for uid, last_seen, lbl in meta_rows:
+                last_seen_map[uid] = last_seen.strftime("%Y-%m-%d %H:%M:%S") if last_seen else None
+                labels_map[uid] = lbl
+
+    groups = []
+    for uid, cnt in groups_rows:
+        groups.append(
             {
-                "packet_id": pid,
-                "count": cnt,
-                "last_seen": last_seen.isoformat() if last_seen else None,
-                "label": label,
+                "packet_id": uid,
+                "count": int(cnt or 0),
+                "last_seen": last_seen_map.get(uid),
+                "label": labels_map.get(uid),
             }
         )
+
+    status_json_debug = json.dumps(getattr(status, "debug", {}), indent=2, ensure_ascii=False)
 
     return templates.TemplateResponse(
         "status.html",
@@ -285,7 +249,8 @@ async def status_page(request: Request):
             "s": status,
             "queue_size": queue.qsize() if queue else 0,
             "analysis": analysis_result,
-            "packets": packets,
+            "packets": groups,  # UI nutzt packets-Name weiter
             "fetch_config": cfg,
+            "status_json_debug": status_json_debug,
         },
     )
