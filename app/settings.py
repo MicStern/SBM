@@ -3,31 +3,47 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """
-    Lädt ENV Variablen aus Docker/OS und optional aus .env (falls vorhanden).
+    Settings werden aus ENV geladen (Docker) und optional aus .env.
+    main.py/db.py erwarten einige Felder (z.B. DATABASE_URL, DEFAULT_WINDOW_SEC).
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # --- Database ---
-    # Muss existieren, weil db.py settings.DATABASE_URL nutzt
+    # --------------------
+    # Database
+    # --------------------
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@db:5432/postgres"
 
-    # Optional: falls du früher DATABASE_DSN oder POSTGRES_DSN genutzt hast,
-    # kannst du das hier ergänzen (nur falls nötig):
-    # DATABASE_DSN: str | None = None
-
-    # --- Fetch/Runtime ---
+    # --------------------
+    # Runtime / Queue
+    # --------------------
     QUEUE_MAXSIZE: int = 1000
     SAVE_CONCURRENCY: int = 2
 
-    # --- Auth für Theta ---
+    # --------------------
+    # Fetch defaults (wird von main.py genutzt!)
+    # --------------------
+    DEFAULT_WINDOW_SEC: int = 1800
+    DEFAULT_POLL_SEC: int = 30
+
+    # Optional: wenn du Limits im UI willst
+    MIN_WINDOW_SEC: int = 30
+    MAX_WINDOW_SEC: int = 7200
+    MIN_POLL_SEC: int = 5
+    MAX_POLL_SEC: int = 300
+
+    # --------------------
+    # Theta Endpoint
+    # --------------------
+    THETA_BASE_URL: str = "http://theta:8000"
+    THETA_TIMEOUT_SEC: int = 30
+
+    # --------------------
+    # Theta Auth
+    # --------------------
     AUTH_TYPE: str = "none"  # "basic" | "none"
     AUTH_USERNAME: str | None = None
     AUTH_PASSWORD: str | None = None
-
-    # --- Theta Endpoint ---
-    THETA_BASE_URL: str = "http://theta:8000"  # ggf. anpassen
-    THETA_TIMEOUT_SEC: int = 30
 
 
 settings = Settings()
