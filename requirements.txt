@@ -8,3 +8,4 @@ pydantic-settings
 jinja2
 alembic
 python-multipart
+aiohttp>=3.9
