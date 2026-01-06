@@ -217,37 +217,42 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
 
 @app.get("/group_frames")
 async def group_frames(label_uid: str):
-    """
-    Für Schwerpunkt-Visualizer:
-    liefert Frames für eine Gruppe (label_uid) sortiert nach timestamp_sensor.
-    """
     async with SessionLocal() as session:
         q = (
             select(Measurement)
             .where(Measurement.label_uid == label_uid)
-            .order_by(Measurement.timestamp_sensor.asc())
+            .order_by(Measurement.timestamp_sensor.asc().nullslast(), Measurement.id.asc())
         )
         rows = (await session.execute(q)).scalars().all()
 
     frames = []
+
+    def _abs_or_zero(v):
+        try:
+            return abs(float(v))
+        except Exception:
+            return 0.0
+
     for m in rows:
-        # weight fields: passe ggf. an deine echten Spaltennamen an
         frames.append(
             {
+                # beides anbieten (UI nimmt bevorzugt timestamp_sensor_iso)
+                "timestamp_sensor_iso": m.timestamp_sensor_iso or None,
                 "timestamp": (
                     m.timestamp_sensor.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
-                    if getattr(m, "timestamp_sensor", None)
-                    else getattr(m, "timestamp_sensor_iso", None)
+                    if m.timestamp_sensor
+                    else None
                 ),
-                "weightA": float(getattr(m, "weight_a", 0.0) or 0.0),
-                "weightB": float(getattr(m, "weight_b", 0.0) or 0.0),
-                "weightC": float(getattr(m, "weight_c", 0.0) or 0.0),
-                "weightD": float(getattr(m, "weight_d", 0.0) or 0.0),
+
+                # ✅ snake_case keys + Betrag
+                "weight_a": _abs_or_zero(m.weight_a),
+                "weight_b": _abs_or_zero(m.weight_b),
+                "weight_c": _abs_or_zero(m.weight_c),
+                "weight_d": _abs_or_zero(m.weight_d),
             }
         )
 
     return JSONResponse({"label_uid": label_uid, "frames": frames})
-
 
 @app.get("/", response_class=HTMLResponse)
 async def status_page(request: Request):
