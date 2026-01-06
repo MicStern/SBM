@@ -1,41 +1,33 @@
-import asyncio
-from dataclasses import dataclass, field
-from time import time
-from typing import Optional, List
-
-MAX_ERROR_LOGS = 20
+import time
+from collections import deque
+from typing import Deque, Optional
 
 
-@dataclass
 class Status:
-    started_at: float = field(default_factory=time)
-    last_fetch_at: Optional[float] = None
-    last_save_at: Optional[float] = None
-    fetched_total: int = 0
-    saved_total: int = 0
-    fetch_errors: int = 0
-    save_errors: int = 0
+    def __init__(self):
+        self.started_at = time.time()
+        self.last_fetch_at: Optional[float] = None
+        self.last_save_at: Optional[float] = None
+        self.fetched_total = 0
+        self.saved_total = 0
+        self.fetch_errors = 0
+        self.save_errors = 0
 
-    # Fehlerpuffer (letzte N Fehler)
-    error_logs: List[str] = field(default_factory=list)
+        self.error_logs: Deque[str] = deque(maxlen=200)
 
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+        # Fetch-Steuerung (über /fetch/start gesetzt)
+        self.fetch_cursor_iso: Optional[str] = None
+        self.fetch_enabled: bool = False
 
-    async def inc(self, attr: str, value: int = 1):
-        async with self._lock:
-            setattr(self, attr, getattr(self, attr) + value)
+    async def inc(self, key: str, by: int = 1):
+        setattr(self, key, int(getattr(self, key, 0)) + by)
 
-    async def set_time(self, attr: str):
-        async with self._lock:
-            setattr(self, attr, time())
+    async def set_time(self, key: str):
+        setattr(self, key, time.time())
 
     async def log_error(self, msg: str):
-        """Fehlermeldung merken (ring buffer)"""
-        async with self._lock:
-            self.error_logs.append(msg)
-            if len(self.error_logs) > MAX_ERROR_LOGS:
-                self.error_logs = self.error_logs[-MAX_ERROR_LOGS:]
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.error_logs.appendleft(f"{ts}  {msg}")
 
 
-# globale Instanz, auf die alle Module zugreifen
 status = Status()
