@@ -289,28 +289,28 @@
 
       function computeCenter(frame, mapping) {
         let sumW = 0, sumX = 0, sumY = 0;
-
+      
         for (const corner of Object.keys(mapping)) {
           const key = mapping[corner];
           if (!key || key === "none") continue;
-
-          const weight = toNumber(frame[key]);
+      
+          const weight = Math.abs(toNumber(frame[key])); // ✅ Betrag
           if (weight === 0) continue;
-
+      
           const pos = positions[corner];
           sumW += weight;
           sumX += weight * pos.x;
           sumY += weight * pos.y;
         }
-
+      
         if (sumW === 0) return { x: 0, y: 0 };
-
+      
         const x = sumX / sumW;
         const y = sumY / sumW;
-
-        // CLAMP damit der Punkt nie außerhalb des Betts liegt
+      
         return { x: clamp(x, -1, 1), y: clamp(y, -1, 1) };
       }
+
 
       function renderFrame(idx) {
         if (!frames.length) {
