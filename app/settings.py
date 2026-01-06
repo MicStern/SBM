@@ -14,10 +14,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
 
-    # Gruppierung: final = label_uid
     GROUP_KEY_NAME: str = "label_uid"
-
-    # Zeitzone (fix für “1h zu früh wartet”)
     TIMEZONE: str = "Europe/Berlin"
 
     HOST: str = "0.0.0.0"
@@ -28,6 +25,10 @@ class Settings(BaseSettings):
 
     DEFAULT_WINDOW_SECONDS: int = 300
     DEFAULT_POLL_SECONDS: int = 30
+
+    # <<< FIX: analysis_loop erwartet das
+    ANALYSIS_INTERVAL_SEC: float = 300.0
+    ANALYSIS_WORKERS: int = 1
 
     class Config:
         env_file = ".env.example"
