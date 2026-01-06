@@ -42,9 +42,11 @@
       <div class="card">
         <h2>Runtime</h2>
         <ul>
-          <li>Started: {{ s.started_at }}</li>
-          <li>Last Fetch: {{ s.last_fetch_at }}</li>
-          <li>Last Save: {{ s.last_save_at }}</li>
+          <!-- ✅ Berlin-Zeit statt Unix -->
+          <li>Started: {{ s.started_at | ts_berlin }}</li>
+          <li>Last Fetch: {{ s.last_fetch_at | ts_berlin }}</li>
+          <li>Last Save: {{ s.last_save_at | ts_berlin }}</li>
+
           <li>Fetched Total: {{ s.fetched_total }}</li>
           <li>Saved Total: {{ s.saved_total }}</li>
           <li>Fetch Errors: {{ s.fetch_errors }}</li>
@@ -193,40 +195,40 @@
           KL
           <select id="sv-map-kl">
             <option value="none">– keiner –</option>
-            <option value="weightA">weightA</option>
-            <option value="weightB">weightB</option>
-            <option value="weightC">weightC</option>
-            <option value="weightD">weightD</option>
+            <option value="weight_a">weight_a</option>
+            <option value="weight_b">weight_b</option>
+            <option value="weight_c">weight_c</option>
+            <option value="weight_d">weight_d</option>
           </select>
         </label>
         <label>
           KR
           <select id="sv-map-kr">
             <option value="none">– keiner –</option>
-            <option value="weightA">weightA</option>
-            <option value="weightB">weightB</option>
-            <option value="weightC">weightC</option>
-            <option value="weightD">weightD</option>
+            <option value="weight_a">weight_a</option>
+            <option value="weight_b">weight_b</option>
+            <option value="weight_c">weight_c</option>
+            <option value="weight_d">weight_d</option>
           </select>
         </label>
         <label>
           FL
           <select id="sv-map-fl">
             <option value="none">– keiner –</option>
-            <option value="weightA">weightA</option>
-            <option value="weightB">weightB</option>
-            <option value="weightC">weightC</option>
-            <option value="weightD">weightD</option>
+            <option value="weight_a">weight_a</option>
+            <option value="weight_b">weight_b</option>
+            <option value="weight_c">weight_c</option>
+            <option value="weight_d">weight_d</option>
           </select>
         </label>
         <label>
           FR
           <select id="sv-map-fr">
             <option value="none">– keiner –</option>
-            <option value="weightA">weightA</option>
-            <option value="weightB">weightB</option>
-            <option value="weightC">weightC</option>
-            <option value="weightD">weightD</option>
+            <option value="weight_a">weight_a</option>
+            <option value="weight_b">weight_b</option>
+            <option value="weight_c">weight_c</option>
+            <option value="weight_d">weight_d</option>
           </select>
         </label>
 
@@ -260,10 +262,11 @@
       let currentIndex = 0;
       let timerId = null;
 
-      mapKL.value = "weightA";
-      mapKR.value = "weightB";
-      mapFL.value = "weightC";
-      mapFR.value = "weightD";
+      // ✅ Default-Mapping passend zur finalen JSON (weight_a etc.)
+      mapKL.value = "weight_a";
+      mapKR.value = "weight_b";
+      mapFL.value = "weight_c";
+      mapFR.value = "weight_d";
 
       function getMapping() {
         return { KL: mapKL.value, KR: mapKR.value, FL: mapFL.value, FR: mapFR.value };
@@ -278,6 +281,12 @@
 
       function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
+      function toNumber(v) {
+        // Negativwerte/0 sind ok – aber NaN/undefined -> 0
+        const n = Number(v);
+        return (Number.isFinite(n)) ? n : 0;
+      }
+
       function computeCenter(frame, mapping) {
         let sumW = 0, sumX = 0, sumY = 0;
 
@@ -285,8 +294,7 @@
           const key = mapping[corner];
           if (!key || key === "none") continue;
 
-          const w = frame[key];
-          const weight = (typeof w === "number" && isFinite(w)) ? w : 0;
+          const weight = toNumber(frame[key]);
           if (weight === 0) continue;
 
           const pos = positions[corner];
@@ -325,7 +333,8 @@
         dot.style.left = (xNorm * size) + "px";
         dot.style.top = (yNorm * size) + "px";
 
-        statusSpan.textContent = `Frame ${idx + 1}/${frames.length} (t=${frame.timestamp || "?"})`;
+        const t = frame.timestamp_sensor_iso || frame.timestamp || "?";
+        statusSpan.textContent = `Frame ${idx + 1}/${frames.length} (t=${t})`;
       }
 
       function stopPlayback() {
@@ -387,6 +396,12 @@
         stopPlayback();
         statusSpan.textContent = frames.length ? `Pause bei Frame ${currentIndex + 1}/${frames.length}` : "Pause.";
       });
+
+      // Re-render wenn Mapping geändert wird
+      mapKL.addEventListener('change', () => renderFrame(currentIndex));
+      mapKR.addEventListener('change', () => renderFrame(currentIndex));
+      mapFL.addEventListener('change', () => renderFrame(currentIndex));
+      mapFR.addEventListener('change', () => renderFrame(currentIndex));
 
       window.addEventListener('load', () => renderFrame(0));
     })();
