@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select
@@ -34,7 +35,6 @@ async def _get_or_create_fetch_config() -> FetchConfig:
         cfg = (
             await session.execute(select(FetchConfig).where(FetchConfig.id == 1))
         ).scalar_one_or_none()
-
         if cfg:
             return cfg
 
@@ -67,62 +67,42 @@ async def _set_fetch_config(**kwargs) -> None:
         await session.commit()
 
 
-def _strip_tz(dt: datetime) -> datetime:
+def _fmt_api(dt: datetime, tz: ZoneInfo) -> str:
     """
-    API erwartet Zeiten OHNE Zeitzone. Falls dt tz-aware ist, entfernen wir tzinfo.
+    API erwartet: YYYY-MM-DD HH:MM:SS (ohne TZ in URL)
+    Wir rechnen intern tz-aware (Europe/Berlin), formatieren aber ohne TZ.
     """
-    if dt.tzinfo is not None:
-        dt = dt.replace(tzinfo=None)
-    return dt
-
-
-def _fmt_api(dt: datetime) -> str:
-    """
-    API erwartet exakt: YYYY-MM-DD HH:MM:SS
-    (Leerzeichen wird via urlencode als %20 kodiert)
-    """
-    dt = _strip_tz(dt)
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
 async def fetch_once(
     client: httpx.AsyncClient,
     start_dt: datetime,
     end_dt: datetime,
+    tz: ZoneInfo,
 ) -> List[IncomingItem]:
-    start_dt = _strip_tz(start_dt)
-    end_dt = _strip_tz(end_dt)
-
     params = {
-        "start_date": _fmt_api(start_dt),
-        "end_date": _fmt_api(end_dt),
+        "start_date": _fmt_api(start_dt, tz),
+        "end_date": _fmt_api(end_dt, tz),
     }
-
     url = f"{str(settings.API_BASE_URL)}?{urlencode(params)}"
 
     try:
         resp = await client.get(url)
-        http_status = resp.status_code
-
-        # Optional: Debug-Infos auf Statusseite (wenn status.set existiert)
         if hasattr(status, "set"):
-            await status.set("last_fetch_http", {"status": http_status, "url": url})
-
+            await status.set("last_fetch_http", {"status": resp.status_code, "url": url})
         resp.raise_for_status()
-
     except httpx.HTTPStatusError as e:
         text = ""
         try:
             text = e.response.text[:500]
         except Exception:
             pass
-
-        await status.log_error(
-            f"FETCH HTTP ERROR: {e.response.status_code} url={url} body={text}"
-        )
+        await status.log_error(f"FETCH HTTP ERROR: {e.response.status_code} url={url} body={text}")
         await status.inc("fetch_errors")
         return []
-
     except Exception as e:
         await status.log_error(f"FETCH RAW ERROR: {repr(e)} url={url}")
         await status.inc("fetch_errors")
@@ -136,9 +116,7 @@ async def fetch_once(
         return []
 
     if not isinstance(raw, list):
-        await status.log_error(
-            f"FETCH ERROR: unexpected response type {type(raw)} (expected list) url={url}"
-        )
+        await status.log_error(f"FETCH ERROR: unexpected response type {type(raw)} url={url}")
         await status.inc("fetch_errors")
         return []
 
@@ -154,16 +132,13 @@ async def fetch_once(
 
 async def fetch_loop(queue: asyncio.Queue):
     """
-    Endlosschleife: pollt API in Fenstern.
-
-    Verhalten:
-    - Start erst wenn enabled=True und cursor gesetzt (über UI)
-    - Wenn cursor in Vergangenheit liegt: "Catch-up" -> schnell bis jetzt
-    - Wenn cursor nahe an jetzt: normaler Poll (poll_seconds)
-    - Niemals in die Zukunft abfragen:
-        end_dt = min(cursor + window, now)
-        Falls now <= cursor -> warten bis Zeit erreicht ist.
+    - Start erst wenn enabled=True und cursor gesetzt
+    - Catch-up: wenn cursor in Vergangenheit -> schnell durchlaufen bis jetzt
+    - Niemals in Zukunft abfragen: end=min(cursor+window, now)
+    - Wenn cursor > now -> warten bis Zeit erreicht ist (kein 1h TZ-Bug)
     """
+    tz = ZoneInfo(settings.TIMEZONE)
+
     headers = _build_auth_headers()
     auth = _build_auth_tuple()
 
@@ -176,30 +151,28 @@ async def fetch_loop(queue: asyncio.Queue):
                     await asyncio.sleep(1.0)
                     continue
 
-                cursor = _strip_tz(cfg.cursor)
+                cursor = cfg.cursor
+                if cursor.tzinfo is None:
+                    cursor = cursor.replace(tzinfo=tz)
+                cursor = cursor.astimezone(tz)
+
                 window = int(cfg.window_seconds)
                 poll = float(cfg.poll_seconds)
 
-                now = datetime.now()  # naive local time
+                now = datetime.now(tz)
 
-                # Wenn cursor in der Zukunft oder genau "jetzt": warten, bis Zeit vergangen ist
+                # cursor liegt in Zukunft -> warten
                 if now <= cursor:
                     wait_s = (cursor - now).total_seconds()
-                    # nicht zu klein flackern: mind. 0.5s
                     wait_s = max(0.5, min(wait_s, 60.0))
                     if hasattr(status, "set"):
-                        await status.set(
-                            "fetch_mode",
-                            {"mode": "waiting", "wait_seconds": round(wait_s, 2), "cursor": _fmt_api(cursor)},
-                        )
+                        await status.set("fetch_mode", {"mode": "waiting", "wait_seconds": round(wait_s, 2)})
                     await asyncio.sleep(wait_s)
                     continue
 
-                # Endzeit: nicht in Zukunft
                 proposed_end = cursor + timedelta(seconds=window)
                 end_dt = proposed_end if proposed_end <= now else now
 
-                # Safety: falls end_dt == cursor, kurz warten
                 if end_dt <= cursor:
                     await asyncio.sleep(0.5)
                     continue
@@ -208,46 +181,31 @@ async def fetch_loop(queue: asyncio.Queue):
                     await status.set(
                         "last_fetch_window",
                         {
-                            "start": _fmt_api(cursor),
-                            "end": _fmt_api(end_dt),
+                            "start": _fmt_api(cursor, tz),
+                            "end": _fmt_api(end_dt, tz),
                             "window_seconds": window,
                             "poll_seconds": poll,
                         },
                     )
 
-                items = await fetch_once(client, cursor, end_dt)
-
-                if hasattr(status, "set"):
-                    await status.set(
-                        "last_fetch_count",
-                        {"count": len(items), "cursor_after": _fmt_api(end_dt)},
-                    )
-
+                items = await fetch_once(client, cursor, end_dt, tz)
                 await status.inc("fetched_total", len(items))
                 await status.set_time("last_fetch_at")
 
                 for it in items:
                     await queue.put(it.model_dump())
 
-                # Cursor weiterschieben
+                # cursor fortschreiben
                 await _set_fetch_config(cursor=end_dt)
 
-                # Catch-up oder Normalbetrieb?
-                now2 = datetime.now()
-                behind_seconds = (now2 - end_dt).total_seconds()
-
-                if behind_seconds > 2.0:
-                    # wir sind hinterher -> schnell weiterlaufen (kurzer Sleep gegen CPU-Spin)
+                behind = (datetime.now(tz) - end_dt).total_seconds()
+                if behind > 2.0:
                     if hasattr(status, "set"):
-                        await status.set(
-                            "fetch_mode",
-                            {"mode": "catch_up", "behind_seconds": round(behind_seconds, 2)},
-                        )
+                        await status.set("fetch_mode", {"mode": "catch_up", "behind_seconds": round(behind, 2)})
                     await asyncio.sleep(0.1)
                 else:
-                    # wir sind "live" -> normaler Poll
                     if hasattr(status, "set"):
-                        await status.set("fetch_mode", {"mode": "live", "behind_seconds": round(behind_seconds, 2)})
+                        await status.set("fetch_mode", {"mode": "live", "behind_seconds": round(behind, 2)})
                     await asyncio.sleep(poll)
 
             except Exception as e:
