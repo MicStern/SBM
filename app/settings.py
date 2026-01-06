@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     DEFAULT_POLL_SEC: int = 2
 
     # Minimaler Overlap, damit du keine Boundary-Daten verlierst (z.B. wenn end_date exklusiv ist)
-    FETCH_OVERLAP_SEC: int = 1
+    FETCH_OVERLAP_SEC: int = 20
 
     # --- Theta API ---
     THETA_BASE_URL: str = "http://theta:8000"
