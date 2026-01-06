@@ -8,7 +8,7 @@ from sqlalchemy import select, func, update
 from .analysis import analysis_loop
 from .db import SessionLocal, engine
 from .fetcher import fetch_loop
-from .models import Base, Measurement
+from .models import Base, Measurement, MeasurementGroup
 from .settings import settings
 from .status import status
 from .storage import save_item
@@ -70,19 +70,27 @@ async def status_json():
 
 @app.get("/groups.json")
 async def groups_json():
-    """
-    Gruppiert nach label_uid (Messgruppen-ID).
-    """
     async with SessionLocal() as session:
-        q = (
+        # counts & last_seen aus measurements, label aus measurement_groups
+        sub = (
             select(
-                Measurement.label_uid,
+                Measurement.label_uid.label("label_uid"),
                 func.count(Measurement.id).label("count"),
                 func.max(Measurement.timestamp_sensor).label("last_seen"),
-                func.max(Measurement.label).label("label"),
             )
             .group_by(Measurement.label_uid)
-            .order_by(func.max(Measurement.timestamp_sensor).desc())
+            .subquery()
+        )
+
+        q = (
+            select(
+                MeasurementGroup.label_uid,
+                sub.c.count,
+                sub.c.last_seen,
+                MeasurementGroup.label,
+            )
+            .join(sub, sub.c.label_uid == MeasurementGroup.label_uid, isouter=True)
+            .order_by(sub.c.last_seen.desc().nullslast())
         )
         rows = (await session.execute(q)).all()
 
@@ -91,7 +99,7 @@ async def groups_json():
         out.append(
             {
                 "label_uid": uid,
-                "count": int(cnt),
+                "count": int(cnt or 0),
                 "last_seen": last_seen.isoformat() if last_seen else None,
                 "label": label,
             }
@@ -103,17 +111,28 @@ async def groups_json():
 async def set_label(label_uid: str = Form(...), label: str = Form("")):
     """
     Label für eine ganze Gruppe setzen:
-    UPDATE measurements SET label=... WHERE label_uid=...
+    - measurement_groups.label
+    - measurements.label (für alle Messpunkte dieser Gruppe)
     """
     label_val = (label or "").strip() or None
 
     async with SessionLocal() as session:
-        stmt = (
+        # group label
+        grp_stmt = (
+            update(MeasurementGroup)
+            .where(MeasurementGroup.label_uid == label_uid)
+            .values(label=label_val)
+        )
+        await session.execute(grp_stmt)
+
+        # measurement labels
+        meas_stmt = (
             update(Measurement)
             .where(Measurement.label_uid == label_uid)
             .values(label=label_val)
         )
-        await session.execute(stmt)
+        await session.execute(meas_stmt)
+
         await session.commit()
 
     return RedirectResponse(url="/", status_code=303)
@@ -121,10 +140,6 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
 
 @app.get("/group_weights")
 async def group_weights(label_uid: str):
-    """
-    Liefert alle Frames (Sekunden) für eine label_uid,
-    sortiert nach timestamp_sensor, mit weight_a/b/c/d.
-    """
     async with SessionLocal() as session:
         q = (
             select(Measurement)
@@ -150,20 +165,28 @@ async def group_weights(label_uid: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def status_page(request: Request):
-    """
-    HTML-Statusseite: Runtime + Gruppenliste + Logs + Schwerpunkt-Visualizer
-    """
     async with SessionLocal() as session:
-        q = (
+        sub = (
             select(
-                Measurement.label_uid,
+                Measurement.label_uid.label("label_uid"),
                 func.count(Measurement.id).label("count"),
                 func.max(Measurement.timestamp_sensor).label("last_seen"),
-                func.max(Measurement.label).label("label"),
             )
             .group_by(Measurement.label_uid)
-            .order_by(func.max(Measurement.timestamp_sensor).desc())
+            .subquery()
         )
+
+        q = (
+            select(
+                MeasurementGroup.label_uid,
+                sub.c.count,
+                sub.c.last_seen,
+                MeasurementGroup.label,
+            )
+            .join(sub, sub.c.label_uid == MeasurementGroup.label_uid, isouter=True)
+            .order_by(sub.c.last_seen.desc().nullslast())
+        )
+
         rows = (await session.execute(q)).all()
 
     groups = []
@@ -171,7 +194,7 @@ async def status_page(request: Request):
         groups.append(
             {
                 "label_uid": uid,
-                "count": int(cnt),
+                "count": int(cnt or 0),
                 "last_seen": last_seen.isoformat() if last_seen else None,
                 "label": label,
             }
