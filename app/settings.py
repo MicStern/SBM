@@ -8,6 +8,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    # --- Database ---
+    # Muss existieren, weil db.py settings.DATABASE_URL nutzt
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@db:5432/postgres"
+
+    # Optional: falls du früher DATABASE_DSN oder POSTGRES_DSN genutzt hast,
+    # kannst du das hier ergänzen (nur falls nötig):
+    # DATABASE_DSN: str | None = None
+
     # --- Fetch/Runtime ---
     QUEUE_MAXSIZE: int = 1000
     SAVE_CONCURRENCY: int = 2
