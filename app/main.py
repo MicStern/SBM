@@ -166,9 +166,17 @@ async def status_page(request: Request):
     """
     Statusseite:
     - Runtime
-    - Gruppenübersicht (MeasurementGroup)
-    - Label setzen pro Gruppe
+    - Gruppenübersicht
+    - Fetch-Status (für status.html: fetch.enabled / fetch.cursor_utc / fetch.window_sec / fetch.poll_sec)
     """
+    # fetch-state so bereitstellen, wie status.html es erwartet
+    fetch = {
+        "enabled": getattr(status, "fetch_enabled", False),
+        "cursor_utc": getattr(status, "fetch_cursor_utc", None),
+        "window_sec": getattr(status, "fetch_window_sec", None),
+        "poll_sec": getattr(status, "fetch_poll_sec", None),
+    }
+
     async with SessionLocal() as session:
         agg = (
             select(
@@ -215,5 +223,6 @@ async def status_page(request: Request):
             "s": status,
             "queue_size": queue.qsize() if queue else 0,
             "groups": groups,
+            "fetch": fetch,  # ✅ DAS fehlte
         },
     )
