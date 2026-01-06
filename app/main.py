@@ -16,6 +16,28 @@ from .storage import save_item
 app = FastAPI()
 templates = Jinja2Templates(directory="app/templates")
 
+from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo
+    BERLIN_TZ = ZoneInfo("Europe/Berlin")
+except Exception:
+    BERLIN_TZ = None
+
+
+def fmt_ts_berlin(ts):
+    if ts is None:
+        return None
+    dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+    if BERLIN_TZ:
+        dt = dt.astimezone(BERLIN_TZ)
+        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+    # Fallback (falls zoneinfo nicht verfügbar)
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+
+
+templates.env.filters["ts_berlin"] = fmt_ts_berlin
+
+
 queue: asyncio.Queue | None = None
 analysis_result: dict = {}
 
