@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text, update
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import SessionLocal
@@ -13,8 +13,8 @@ BERLIN = ZoneInfo("Europe/Berlin")
 
 def _parse_ts_sensor_iso(ts: str) -> datetime | None:
     """
-    Deine JSON liefert: "2026-01-05 15:25:48" (ohne tz)
-    Interpretation: Sensorzeit ist lokale Zeit Berlin (so wie ihr es beobachtet habt).
+    Theta JSON liefert: "2026-01-05 15:25:48" (ohne tz)
+    Interpretation: lokale Zeit Berlin.
     Wir speichern als aware UTC in timestamp_sensor.
     """
     if not ts:
@@ -30,20 +30,20 @@ def _parse_ts_sensor_iso(ts: str) -> datetime | None:
 async def save_item(item: dict):
     """
     Speichert:
-    - measurements: alle Spalten aus JSON (vereinfachtes Mapping)
+    - measurements: spaltenbasiertes Mapping
     - measurement_groups: label_uid + measurement_ids[] + label (optional)
     """
     try:
         label_uid = item.get("label_uid")
         if not label_uid:
-            # Ohne group id macht group mapping keinen Sinn – trotzdem measurement speichern? => hier skip
             raise ValueError("missing label_uid")
 
         ts_iso = item.get("timestamp_sensor_iso")
         ts_sensor = _parse_ts_sensor_iso(ts_iso)
 
-        # Werte ziehen
-        payload = dict(item)  # optional: wenn du raw speichern willst, aber du wolltest spaltenbasiert
+        # ✅ hart validieren, weil timestamp_sensor in DB nullable=False ist
+        if ts_sensor is None:
+            raise ValueError(f"invalid timestamp_sensor_iso: {ts_iso!r}")
 
         async with SessionLocal() as session:
             # 1) Measurement insert
@@ -52,7 +52,7 @@ async def save_item(item: dict):
                 label_uid=label_uid,
                 label=item.get("label"),
                 timestamp_sensor=ts_sensor,
-                timestamp_sensor_iso=ts_iso,
+                timestamp_sensor_iso=ts_iso,  # ✅ existiert jetzt im Model
                 probe_id=item.get("probe_id"),
                 measurementid=item.get("measurementid"),
                 systemstate=item.get("systemstate"),
@@ -71,12 +71,12 @@ async def save_item(item: dict):
                 rawstrain_b=item.get("rawstrain_b"),
                 rawstrain_c=item.get("rawstrain_c"),
                 rawstrain_d=item.get("rawstrain_d"),
+                label_cnt=item.get("label_cnt"),
             )
             session.add(m)
-            await session.flush()  # damit m.id verfügbar ist
+            await session.flush()  # m.id verfügbar
 
             # 2) Group upsert + ID anhängen (dedup)
-            # - label in group optional mitführen (überschreibbar über /label)
             grp_label = item.get("label")
             grp_stmt = (
                 pg_insert(MeasurementGroup)
@@ -88,10 +88,7 @@ async def save_item(item: dict):
                 .on_conflict_do_update(
                     index_elements=[MeasurementGroup.label_uid],
                     set_={
-                        # label nur setzen wenn group.label noch leer ist (optional)
-                        # du willst später über UI sowieso überschreiben -> hier lassen wir es so:
                         "label": grp_label,
-                        # measurement_ids dedup append:
                         "measurement_ids": text(
                             """
                             (
