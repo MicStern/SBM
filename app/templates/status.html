@@ -43,10 +43,10 @@
         <h2>Runtime</h2>
         <ul>
           <!-- ✅ Berlin-Zeit statt Unix -->
-          <li>Started: {{ s.started_at | ts_berlin }}</li>
+          <li>Fetcher Started: {{ fetch.started_at|ts_berlin }}</li>
+          <li>Fetch Cursor (Berlin): {{ fetch.cursor_utc|ts_berlin }}</li>
           <li>Last Fetch: {{ s.last_fetch_at | ts_berlin }}</li>
           <li>Last Save: {{ s.last_save_at | ts_berlin }}</li>
-
           <li>Fetched Total: {{ s.fetched_total }}</li>
           <li>Saved Total: {{ s.saved_total }}</li>
           <li>Fetch Errors: {{ s.fetch_errors }}</li>
