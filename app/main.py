@@ -3,18 +3,13 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import (
-    HTMLResponse,
-    JSONResponse,
-    PlainTextResponse,
-    RedirectResponse,
-)
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import SessionLocal, engine
-from .fetcher import fetch_loop  # <- keine FetchConfig-Imports!
+from .fetcher import fetch_loop
 from .models import Base, Measurement, MeasurementGroup
 from .settings import settings
 from .status import status
@@ -24,59 +19,45 @@ from .storage import save_item
 app = FastAPI()
 templates = Jinja2Templates(directory="app/templates")
 
-# -------- Zeitformat Berlin (für Template) --------
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
 
 def ts_berlin(value):
     """
     Jinja Filter:
-    - status.* timestamps sind floats (unix seconds)
-    - optional: datetime (aware/naiv) wird auch unterstützt
+    - epoch seconds (float/int) -> Berlin time
+    - datetime -> Berlin time
+    - ISO str (z.B. "2026-01-05T10:00:00+00:00") -> Berlin time
     """
     if value is None:
         return "—"
-
     try:
-        # 1) epoch seconds (float/int)
         if isinstance(value, (int, float)):
             dt = datetime.fromtimestamp(float(value), tz=timezone.utc).astimezone(BERLIN_TZ)
             return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
 
-        # 2) datetime-Objekt
         if isinstance(value, datetime):
-            # Wenn naiv, als UTC interpretieren
             if value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)
             return value.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
 
-        # 3) string -> einfach so lassen
-        return str(value)
+        if isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+            except Exception:
+                return value
 
+        return str(value)
     except Exception:
         return str(value)
 
 
 templates.env.filters["ts_berlin"] = ts_berlin
 
-# -------- Queue / Background workers --------
 queue: asyncio.Queue | None = None
-
-# -------- Fetcher runtime-state (in-memory) --------
-fetch_state = {
-    "enabled": False,
-    "cursor_utc": None,   # datetime in UTC (aware)
-    "window_sec": 300,
-    "poll_sec": 30,
-}
-
-_fetch_task: asyncio.Task | None = None
-
-
-def _ensure_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 async def saver_loop(q: asyncio.Queue):
@@ -84,10 +65,6 @@ async def saver_loop(q: asyncio.Queue):
         item = await q.get()
         try:
             await save_item(item)
-            status.last_save_at = datetime.now(tz=timezone.utc).timestamp()
-        except Exception as e:
-            status.save_errors += 1
-            status.error_logs.appendleft(f"SAVE ERROR: {repr(e)}")
         finally:
             q.task_done()
 
@@ -95,18 +72,17 @@ async def saver_loop(q: asyncio.Queue):
 @app.on_event("startup")
 async def startup():
     global queue
+    status.started_at = datetime.now(timezone.utc).timestamp()
+
     queue = asyncio.Queue(maxsize=settings.QUEUE_MAXSIZE)
 
-    # Tabellen erstellen (Prod: Alembic)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Saver Workers
+    asyncio.create_task(fetch_loop(queue))
+
     for _ in range(settings.SAVE_CONCURRENCY):
         asyncio.create_task(saver_loop(queue))
-
-    # Runtime start
-    status.started_at = datetime.now(tz=timezone.utc).timestamp()
 
 
 @app.get("/healthz")
@@ -127,58 +103,36 @@ async def status_json():
             "save_errors": status.save_errors,
             "queue_size": queue.qsize() if queue else 0,
             "error_logs": list(status.error_logs),
-
-            "fetch_enabled": fetch_state["enabled"],
-            "fetch_cursor_utc": fetch_state["cursor_utc"].isoformat() if fetch_state["cursor_utc"] else None,
-            "fetch_window_sec": fetch_state["window_sec"],
-            "fetch_poll_sec": fetch_state["poll_sec"],
+            "fetch_enabled": status.fetch_enabled,
+            "fetch_started_at": status.fetch_started_at,
+            "fetch_cursor_utc": status.fetch_cursor_utc,
+            "fetch_window_sec": status.fetch_window_sec,
+            "fetch_poll_sec": status.fetch_poll_sec,
         }
     )
 
 
 @app.post("/fetch/start")
 async def fetch_start(
-    start_dt: str = Form(...),              # aus datetime-local
-    window_sec: int = Form(300),
-    poll_sec: int = Form(30),
+    start_dt: str = Form(...),
+    window_sec: int = Form(settings.DEFAULT_WINDOW_SEC),
+    poll_sec: int = Form(settings.DEFAULT_POLL_SEC),
 ):
     """
-    Startet den Fetcher:
-    - Startzeit aus datetime-local => als Europe/Berlin interpretieren
-    - dann nach UTC umrechnen
-    - fetch_loop() bekommt KEINE kwargs, sondern liest Config aus status/fetch_state
+    start_dt kommt aus <input type="datetime-local"> => "YYYY-MM-DDTHH:MM"
+    Interpretation: Berlin lokale Zeit.
+    Wir speichern cursor als UTC ISO.
     """
-    global _fetch_task
-
-    if queue is None:
-        return PlainTextResponse("Queue not initialized", status_code=500)
-
-    # datetime-local liefert z.B. "2026-01-05T10:00"
+    # Parse datetime-local
     dt_local = datetime.fromisoformat(start_dt)  # naive
-    dt_local = dt_local.replace(tzinfo=BERLIN_TZ)
-    dt_utc = _ensure_utc(dt_local.astimezone(timezone.utc))
+    dt_berlin = dt_local.replace(tzinfo=BERLIN_TZ)
+    dt_utc = dt_berlin.astimezone(timezone.utc)
 
-    fetch_state["enabled"] = True
-    fetch_state["cursor_utc"] = dt_utc
-    fetch_state["window_sec"] = int(window_sec)
-    fetch_state["poll_sec"] = int(poll_sec)
-
-    # Werte so ablegen, wie dein status.html sie anzeigt
     status.fetch_enabled = True
+    status.fetch_started_at = datetime.now(timezone.utc).timestamp()
     status.fetch_cursor_utc = dt_utc.isoformat()
-    status.fetch_window_sec = fetch_state["window_sec"]
-    status.fetch_poll_sec = fetch_state["poll_sec"]
-
-    # Task starten (oder neu starten)
-    if _fetch_task is not None and not _fetch_task.done():
-        _fetch_task.cancel()
-        try:
-            await _fetch_task
-        except Exception:
-            pass
-
-    # WICHTIG: keine kwargs -> nur queue
-    _fetch_task = asyncio.create_task(fetch_loop(queue))
+    status.fetch_window_sec = int(window_sec)
+    status.fetch_poll_sec = int(poll_sec)
 
     status.error_logs.appendleft(
         f"FETCH START: cursor={status.fetch_cursor_utc} window={status.fetch_window_sec}s poll={status.fetch_poll_sec}s"
@@ -189,19 +143,8 @@ async def fetch_start(
 
 @app.post("/fetch/stop")
 async def fetch_stop():
-    global _fetch_task
-
-    fetch_state["enabled"] = False
     status.fetch_enabled = False
-
-    if _fetch_task is not None and not _fetch_task.done():
-        _fetch_task.cancel()
-        try:
-            await _fetch_task
-        except Exception:
-            pass
-    _fetch_task = None
-
+    status.fetch_started_at = None
     status.error_logs.appendleft("FETCH STOP")
     return RedirectResponse(url="/", status_code=303)
 
@@ -216,6 +159,7 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
     label_val = label.strip() or None
 
     async with SessionLocal() as session:
+        # Group upsert
         grp_stmt = (
             pg_insert(MeasurementGroup)
             .values(label_uid=label_uid, label=label_val, measurement_ids=[])
@@ -226,6 +170,7 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
         )
         await session.execute(grp_stmt)
 
+        # Measurements updaten
         await session.execute(
             update(Measurement)
             .where(Measurement.label_uid == label_uid)
@@ -240,14 +185,13 @@ async def set_label(label_uid: str = Form(...), label: str = Form("")):
 @app.get("/group_frames")
 async def group_frames(label_uid: str):
     """
-    Für Schwerpunkt-Visualizer:
-    liefert Frames für eine Gruppe (label_uid) sortiert nach timestamp_sensor.
+    Für deinen Schwerpunkt-Visualizer (JS erwartet /group_frames?label_uid=...)
     """
     async with SessionLocal() as session:
         q = (
             select(Measurement)
             .where(Measurement.label_uid == label_uid)
-            .order_by(Measurement.timestamp_sensor.asc())
+            .order_by(Measurement.timestamp_sensor.asc().nullslast(), Measurement.id.asc())
         )
         rows = (await session.execute(q)).scalars().all()
 
@@ -256,7 +200,7 @@ async def group_frames(label_uid: str):
         frames.append(
             {
                 "timestamp": (
-                    m.timestamp_sensor.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+                    m.timestamp_sensor.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
                     if m.timestamp_sensor
                     else (m.timestamp_sensor_iso or None)
                 ),
@@ -273,10 +217,11 @@ async def group_frames(label_uid: str):
 @app.get("/", response_class=HTMLResponse)
 async def status_page(request: Request):
     fetch = {
-        "enabled": bool(fetch_state["enabled"]),
-        "cursor_utc": fetch_state["cursor_utc"].isoformat() if fetch_state["cursor_utc"] else None,
-        "window_sec": fetch_state["window_sec"],
-        "poll_sec": fetch_state["poll_sec"],
+        "enabled": bool(status.fetch_enabled),
+        "cursor_utc": status.fetch_cursor_utc,
+        "window_sec": status.fetch_window_sec,
+        "poll_sec": status.fetch_poll_sec,
+        "started_at": status.fetch_started_at,
     }
 
     async with SessionLocal() as session:
@@ -309,11 +254,7 @@ async def status_page(request: Request):
             {
                 "label_uid": uid,
                 "count": int(cnt or 0),
-                "last_seen": (
-                    last_seen.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
-                    if last_seen
-                    else None
-                ),
+                "last_seen": last_seen.isoformat() if last_seen else None,
                 "label": label,
             }
         )
