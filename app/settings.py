@@ -12,22 +12,24 @@ class Settings(BaseSettings):
     QUEUE_MAXSIZE: int = 2000
     SAVE_CONCURRENCY: int = 2
 
-    # --- Fetch defaults (für UI & Start ohne Auswahl) ---
+    # --- Fetch defaults ---
     DEFAULT_WINDOW_SEC: int = 300
-    DEFAULT_POLL_SEC: int = 30
+    DEFAULT_POLL_SEC: int = 2
 
-    # --- Theta endpoint ---
-    # Base = Host (ohne Pfad)
-    THETA_BASE_URL: str = "https://theta-v2-server.5micron.net"
-    # Pfad = API path
+    # Minimaler Overlap, damit du keine Boundary-Daten verlierst (z.B. wenn end_date exklusiv ist)
+    FETCH_OVERLAP_SEC: int = 1
+
+    # --- Theta API ---
+    THETA_BASE_URL: str = "http://theta:8000"
     THETA_PROBE_PATH: str = "/basic-api/probes/hsl"
 
-    # Zeitformat der Query-Params (der Server-Beispiel-URL nutzt lokale Zeitstrings ohne TZ)
-    # -> Default Berlin
+    # WICHTIG: Theta erwartet Strings ohne TZ ("YYYY-MM-DD HH:MM:SS").
+    # Diese Zeitzone ist die Interpretation, die auch Postman "gefühlt" nutzt.
+    # Für Deutschland/5micron in Jan ist das sehr wahrscheinlich Europe/Berlin.
     THETA_TIMEZONE: str = "Europe/Berlin"
 
     # --- Auth ---
-    # AUTH_TYPE: "none" | "basic" | "bearer"
+    # "none" | "basic" | "bearer"
     AUTH_TYPE: str = "basic"
     AUTH_USERNAME: str | None = None
     AUTH_PASSWORD: str | None = None
