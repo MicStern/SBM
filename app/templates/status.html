@@ -10,11 +10,12 @@
     .logs { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 260px; overflow: auto; }
     .row { display:flex; gap:8px; align-items:end; flex-wrap: wrap; }
     label { font-size: 12px; display:block; }
-    input { padding: 6px; }
+    input, select { padding: 6px; }
     button { padding: 8px 10px; cursor: pointer; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 1px solid #eee; padding: 8px; text-align:left; }
     .small { font-size: 12px; color: #666; }
+    a { color: #0b57d0; }
   </style>
 </head>
 
@@ -136,8 +137,36 @@
 
         <canvas id="canvas" width="420" height="420" style="border:1px solid #ddd; border-radius:8px;"></canvas>
 
+        <div class="card" style="margin-top:12px;">
+          <h3 style="margin:0 0 8px 0;">Foot → Sensor mapping</h3>
+          <div class="row">
+            <div>
+              <label>Top-left</label>
+              <select id="map_tl"></select>
+            </div>
+            <div>
+              <label>Top-right</label>
+              <select id="map_tr"></select>
+            </div>
+            <div>
+              <label>Bottom-left</label>
+              <select id="map_bl"></select>
+            </div>
+            <div>
+              <label>Bottom-right</label>
+              <select id="map_br"></select>
+            </div>
+            <div style="align-self:end;">
+              <button onclick="resetMapping()" type="button">Reset</button>
+            </div>
+          </div>
+          <p class="small" style="margin:8px 0 0 0;">
+            Mapping is stored locally in your browser (localStorage).
+          </p>
+        </div>
+
         <div class="row" style="margin-top:10px;">
-          <button onclick="togglePlay()">Play/Pause</button>
+          <button onclick="togglePlay()" type="button">Play/Pause</button>
           <span class="small" id="frameInfo">No data loaded</span>
         </div>
       </div>
@@ -154,38 +183,99 @@
   let playing = false;
   let timer = null;
 
-  const positions = {
-    a: {x:-1, y:-1},
-    b: {x: 1, y:-1},
-    c: {x:-1, y: 1},
-    d: {x: 1, y: 1},
-  };
-
-  const mapping = {
-    a: "weight_a",
-    b: "weight_b",
-    c: "weight_c",
-    d: "weight_d",
-  };
-
   function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
   function toNumber(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
+  // === Mapping UI ===
+  const SENSOR_KEYS = ["weight_a", "weight_b", "weight_c", "weight_d", "none"];
+  const STORAGE_KEY = "foot_sensor_mapping_v1";
+
+  // Ecken/füße (tl/tr/bl/br) -> sensor key
+  let footMapping = {
+    tl: "weight_a",
+    tr: "weight_b",
+    bl: "weight_c",
+    br: "weight_d",
+  };
+
+  function loadMapping() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      for (const k of ["tl","tr","bl","br"]) {
+        if (SENSOR_KEYS.includes(obj?.[k])) footMapping[k] = obj[k];
+      }
+    } catch (_) {}
+  }
+
+  function saveMapping() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(footMapping));
+    } catch (_) {}
+  }
+
+  function populateSelect(selectEl, selectedValue) {
+    selectEl.innerHTML = "";
+    for (const key of SENSOR_KEYS) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = key;
+      if (key === selectedValue) opt.selected = true;
+      selectEl.appendChild(opt);
+    }
+  }
+
+  function wireMappingUI() {
+    loadMapping();
+
+    const tl = document.getElementById("map_tl");
+    const tr = document.getElementById("map_tr");
+    const bl = document.getElementById("map_bl");
+    const br = document.getElementById("map_br");
+
+    populateSelect(tl, footMapping.tl);
+    populateSelect(tr, footMapping.tr);
+    populateSelect(bl, footMapping.bl);
+    populateSelect(br, footMapping.br);
+
+    tl.onchange = () => { footMapping.tl = tl.value; saveMapping(); redraw(); };
+    tr.onchange = () => { footMapping.tr = tr.value; saveMapping(); redraw(); };
+    bl.onchange = () => { footMapping.bl = bl.value; saveMapping(); redraw(); };
+    br.onchange = () => { footMapping.br = br.value; saveMapping(); redraw(); };
+  }
+
+  function resetMapping() {
+    footMapping = { tl:"weight_a", tr:"weight_b", bl:"weight_c", br:"weight_d" };
+    saveMapping();
+    wireMappingUI();
+    redraw();
+  }
+
+  // === Visualizer ===
   function computeCenter(frame) {
     let sumW = 0, sumX = 0, sumY = 0;
 
-    for (const corner of Object.keys(mapping)) {
-      const key = mapping[corner];
-      const w = Math.abs(toNumber(frame[key]));  // Betrag
+    const corners = [
+      { id: "tl", pos: { x: -1, y: -1 } },
+      { id: "tr", pos: { x:  1, y: -1 } },
+      { id: "bl", pos: { x: -1, y:  1 } },
+      { id: "br", pos: { x:  1, y:  1 } },
+    ];
+
+    for (const c of corners) {
+      const key = footMapping[c.id];
+      if (!key || key === "none") continue;
+
+      const w = Math.abs(toNumber(frame[key])); // Betrag
       if (w === 0) continue;
 
-      const pos = positions[corner];
       sumW += w;
-      sumX += w * pos.x;
-      sumY += w * pos.y;
+      sumX += w * c.pos.x;
+      sumY += w * c.pos.y;
     }
 
-    if (sumW === 0) return {x:0, y:0};
+    if (sumW === 0) return { x: 0, y: 0 };
     return { x: clamp(sumX / sumW, -1, 1), y: clamp(sumY / sumW, -1, 1) };
   }
 
@@ -207,6 +297,12 @@
 
     const ts = frame.timestamp_sensor_iso || frame.timestamp || "";
     frameInfo.textContent = `Frame ${frameIndex+1}/${frames.length}  ${ts}`;
+  }
+
+  function redraw() {
+    if (!frames.length) return;
+    const idx = Math.min(frameIndex, frames.length - 1);
+    draw(frames[idx]);
   }
 
   function step() {
@@ -238,6 +334,9 @@
       frameInfo.textContent = "No frames returned";
     }
   }
+
+  // init mapping UI on page load
+  wireMappingUI();
 </script>
 
 </body>
