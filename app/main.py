@@ -27,21 +27,35 @@ templates = Jinja2Templates(directory="app/templates")
 # -------- Zeitformat Berlin (für Template) --------
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
+def ts_berlin(value):
+    """
+    Jinja Filter:
+    - status.* timestamps sind floats (unix seconds)
+    - optional: datetime (aware/naiv) wird auch unterstützt
+    """
+    if value is None:
+        return "—"
 
-def fmt_ts_berlin(ts):
-    """
-    status.* timestamps sind floats (unix seconds).
-    """
-    if ts is None:
-        return "-"
     try:
-        dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(BERLIN_TZ)
-        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+        # 1) epoch seconds (float/int)
+        if isinstance(value, (int, float)):
+            dt = datetime.fromtimestamp(float(value), tz=timezone.utc).astimezone(BERLIN_TZ)
+            return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+        # 2) datetime-Objekt
+        if isinstance(value, datetime):
+            # Wenn naiv, als UTC interpretieren (weil deine status times UTC epoch sind)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+        # 3) string -> einfach so lassen (oder du kannst hier optional parse einbauen)
+        return str(value)
+
     except Exception:
-        return str(ts)
+        return str(value)
 
-
-templates.env.filters["ts_berlin"] = fmt_ts_berlin
+templates.env.filters["ts_berlin"] = ts_berlin
 
 # -------- Queue / Background workers --------
 queue: asyncio.Queue | None = None
