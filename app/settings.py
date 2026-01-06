@@ -1,49 +1,47 @@
+# app/settings.py
+from __future__ import annotations
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """
-    Settings werden aus ENV geladen (Docker) und optional aus .env.
-    main.py/db.py erwarten einige Felder (z.B. DATABASE_URL, DEFAULT_WINDOW_SEC).
-    """
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
-    # --------------------
-    # Database
-    # --------------------
+    # --- DB ---
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@db:5432/postgres"
 
-    # --------------------
-    # Runtime / Queue
-    # --------------------
-    QUEUE_MAXSIZE: int = 1000
+    # --- Queue/Workers ---
+    QUEUE_MAXSIZE: int = 2000
     SAVE_CONCURRENCY: int = 2
 
-    # --------------------
-    # Fetch defaults (wird von main.py genutzt!)
-    # --------------------
-    DEFAULT_WINDOW_SEC: int = 1800
+    # --- Fetch defaults (für UI & Start ohne Auswahl) ---
+    DEFAULT_WINDOW_SEC: int = 300
     DEFAULT_POLL_SEC: int = 30
 
-    # Optional: wenn du Limits im UI willst
-    MIN_WINDOW_SEC: int = 30
-    MAX_WINDOW_SEC: int = 7200
-    MIN_POLL_SEC: int = 5
-    MAX_POLL_SEC: int = 300
+    # --- Theta endpoint ---
+    # Base = Host (ohne Pfad)
+    THETA_BASE_URL: str = "https://theta-v2-server.5micron.net"
+    # Pfad = API path
+    THETA_PROBE_PATH: str = "/basic-api/probes/hsl"
 
-    # --------------------
-    # Theta Endpoint
-    # --------------------
-    THETA_BASE_URL: str = "http://theta:8000"
-    THETA_TIMEOUT_SEC: int = 30
+    # Zeitformat der Query-Params (der Server-Beispiel-URL nutzt lokale Zeitstrings ohne TZ)
+    # -> Default Berlin
+    THETA_TIMEZONE: str = "Europe/Berlin"
 
-    # --------------------
-    # Theta Auth
-    # --------------------
-    AUTH_TYPE: str = "none"  # "basic" | "none"
+    # --- Auth ---
+    # AUTH_TYPE: "none" | "basic" | "bearer"
+    AUTH_TYPE: str = "basic"
     AUTH_USERNAME: str | None = None
     AUTH_PASSWORD: str | None = None
+    AUTH_BEARER_TOKEN: str | None = None
+
+    # --- HTTP ---
+    HTTP_TIMEOUT_SEC: float = 30.0
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 settings = Settings()
