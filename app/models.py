@@ -1,5 +1,5 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import BigInteger, String, JSON, DateTime, func, Integer, Float
+from sqlalchemy import BigInteger, String, DateTime, func, Integer, Float, Text
 from sqlalchemy.dialects.postgresql import ARRAY
 
 
@@ -12,60 +12,49 @@ class Measurement(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
 
-    # Dedupe-Key
-    external_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    # Gruppierung
+    label_uid: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
 
-    # Group key
-    label_uid: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    # Datenfelder (finales JSON)
+    serial: Mapped[str | None] = mapped_column(String(64), index=True)
+    timestamp_sensor: Mapped[object] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    probe_id: Mapped[int | None] = mapped_column(Integer)
 
-    # Core fields
-    serial: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    temp_a: Mapped[float | None] = mapped_column(Float)
+    temp_b: Mapped[float | None] = mapped_column(Float)
+    temp_c: Mapped[float | None] = mapped_column(Float)
+    temp_d: Mapped[float | None] = mapped_column(Float)
 
-    # Sensor timestamp as "real" datetime (timezone-aware)
-    timestamp_sensor: Mapped[DateTime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    weight_a: Mapped[float | None] = mapped_column(Float)
+    weight_b: Mapped[float | None] = mapped_column(Float)
+    weight_c: Mapped[float | None] = mapped_column(Float)
+    weight_d: Mapped[float | None] = mapped_column(Float)
 
-    probe_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
+    rawstrain_a: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    rawstrain_b: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    rawstrain_c: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    rawstrain_d: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
 
-    # temps
-    temp_a: Mapped[float | None] = mapped_column(Float, nullable=True)
-    temp_b: Mapped[float | None] = mapped_column(Float, nullable=True)
-    temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
-    temp_d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(200))
+    label_cnt: Mapped[int | None] = mapped_column(Integer)
+    measurementid: Mapped[int | None] = mapped_column(Integer)
 
-    # weights
-    weight_a: Mapped[float | None] = mapped_column(Float, nullable=True)
-    weight_b: Mapped[float | None] = mapped_column(Float, nullable=True)
-    weight_c: Mapped[float | None] = mapped_column(Float, nullable=True)
-    weight_d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    systemstate: Mapped[str | None] = mapped_column(Text)
+    debugsw1: Mapped[int | None] = mapped_column(Integer)
+    debugsw2: Mapped[int | None] = mapped_column(Integer)
+    debugval1: Mapped[str | None] = mapped_column(String(200))
 
-    # rawstrains (listen → JSON ist am unkompliziertesten)
-    rawstrain_a: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    rawstrain_b: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    rawstrain_c: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    rawstrain_d: Mapped[list | None] = mapped_column(JSON, nullable=True)
-
-    # label data (keine separate label-tabelle)
-    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    label_cnt: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    measurementid: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    systemstate: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
-    debugsw1: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    debugsw2: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    debugval1: Mapped[str | None] = mapped_column(String(128), nullable=True)
-
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # DB meta
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class MeasurementGroup(Base):
     __tablename__ = "measurement_groups"
 
-    # group id
-    label_uid: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label_uid: Mapped[str] = mapped_column(String(128), primary_key=True)
 
-    # group label (für Übersicht)
-    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
-
-    # Liste der Measurement-IDs, die zu dieser Gruppe gehören
+    # Liste der Measurement-IDs in dieser Gruppe
     measurement_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False, server_default="{}")
+
+    # Label zur Übersicht (wie du wolltest)
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
