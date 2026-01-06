@@ -10,29 +10,14 @@
     th { text-align: left; }
     .muted { color: #666; }
     form.inline { display: inline-flex; gap: 8px; align-items: center; }
-    input[type="text"] { padding: 4px 6px; }
+    input[type="text"], input[type="datetime-local"] { padding: 4px 6px; }
     button { padding: 4px 8px; cursor: pointer; }
     .grid { display: grid; grid-template-columns: 1fr 2fr; gap: 24px; }
 
-    #sv-container {
-      margin-top: 32px;
-      border-top: 1px solid #ddd;
-      padding-top: 16px;
-    }
-    #sv-controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-    #sv-square-wrapper {
-      margin-top: 12px;
-      display: flex;
-      gap: 24px;
-      flex-wrap: wrap;
-      align-items: flex-start;
-    }
+    #sv-container { margin-top: 32px; border-top: 1px solid #ddd; padding-top: 16px; }
+    #sv-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+    #sv-square-wrapper { margin-top: 12px; display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+
     #sv-square {
       position: relative;
       width: 260px;
@@ -62,20 +47,13 @@
       background: red;
       pointer-events: none;
       transform: translate(-50%, -50%);
+      left: 50%;
+      top: 50%;
     }
 
-    #sv-mapping {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      font-size: 13px;
-      min-width: 260px;
-    }
-    #sv-mapping label {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-    }
+    #sv-meta { font-size: 13px; margin-top: 8px; }
+    #sv-mapping { display: flex; flex-direction: column; gap: 6px; font-size: 13px; min-width: 240px; }
+    #sv-mapping label { display: flex; justify-content: space-between; gap: 8px; }
     #sv-mapping select { min-width: 120px; }
   </style>
 </head>
@@ -94,7 +72,18 @@
         <li>Fetch Errors: {{ s.fetch_errors }}</li>
         <li>Save Errors: {{ s.save_errors }}</li>
         <li>Queue Size: {{ queue_size }}</li>
+        <li>Fetch Enabled: {{ "yes" if s.fetch_enabled else "no" }}</li>
+        <li>Fetch Cursor (UTC): {{ s.fetch_cursor_iso or "-" }}</li>
       </ul>
+
+      <h2>Fetch Steuerung</h2>
+      <form class="inline" method="post" action="/fetch/start">
+        <input type="datetime-local" name="start_dt" required>
+        <button type="submit">Start Fetch</button>
+      </form>
+      <form class="inline" method="post" action="/fetch/stop">
+        <button type="submit">Stop Fetch</button>
+      </form>
 
       <h2>Fehler-Logs (letzte {{ s.error_logs|length }})</h2>
       {% if s.error_logs %}
@@ -109,7 +98,7 @@
     </div>
 
     <div>
-      <h2>Messgruppen (label_uid) — {{ groups|length }}</h2>
+      <h2>Measurement Groups ({{ groups|length }})</h2>
       <table>
         <thead>
           <tr>
@@ -125,7 +114,7 @@
           <tr>
             <td>{{ g.label_uid }}</td>
             <td>{{ g.count }}</td>
-            <td>{{ g.last_seen }}</td>
+            <td>{{ g.last_seen or "" }}</td>
             <td>{{ g.label or "" }}</td>
             <td>
               <form class="inline" method="post" action="/label">
@@ -136,7 +125,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="5" class="muted">Noch keine Gruppen.</td></tr>
+          <tr><td colspan="5" class="muted">Noch keine Groups.</td></tr>
         {% endfor %}
         </tbody>
       </table>
@@ -144,11 +133,11 @@
   </div>
 
   <div id="sv-container">
-    <h2>Schwerpunkt-Visualizer (bed-center)</h2>
+    <h2>Schwerpunkt-Visualizer</h2>
 
     <div id="sv-controls">
       <label>
-        Messgruppe / label_uid:
+        Group / label_uid:
         <select id="sv-group-select">
           <option value="">-- auswählen --</option>
           {% for g in groups %}
@@ -160,12 +149,6 @@
       <button id="sv-load-btn">Laden</button>
       <button id="sv-play-btn">Play</button>
       <button id="sv-pause-btn">Pause</button>
-
-      <label class="muted" style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="sv-abs" checked>
-        abs(weight) verwenden
-      </label>
-
       <span id="sv-status" class="muted"></span>
     </div>
 
@@ -180,56 +163,43 @@
 
       <div id="sv-mapping">
         <strong>Zuordnung Gewicht → Bettfuß</strong>
-
-        <label>
-          KL (Kopf-Links)
-          <select id="sv-map-kl">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
-
-        <label>
-          KR (Kopf-Rechts)
-          <select id="sv-map-kr">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
-
-        <label>
-          FL (Fuß-Links)
-          <select id="sv-map-fl">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
-
-        <label>
-          FR (Fuß-Rechts)
-          <select id="sv-map-fr">
-            <option value="none">– keiner –</option>
-            <option value="weight_a">weight_a</option>
-            <option value="weight_b">weight_b</option>
-            <option value="weight_c">weight_c</option>
-            <option value="weight_d">weight_d</option>
-          </select>
-        </label>
+        <label>KL <select id="sv-map-kl">
+          <option value="none">– keiner –</option>
+          <option value="weight_a">weight_a</option>
+          <option value="weight_b">weight_b</option>
+          <option value="weight_c">weight_c</option>
+          <option value="weight_d">weight_d</option>
+        </select></label>
+        <label>KR <select id="sv-map-kr">
+          <option value="none">– keiner –</option>
+          <option value="weight_a">weight_a</option>
+          <option value="weight_b">weight_b</option>
+          <option value="weight_c">weight_c</option>
+          <option value="weight_d">weight_d</option>
+        </select></label>
+        <label>FL <select id="sv-map-fl">
+          <option value="none">– keiner –</option>
+          <option value="weight_a">weight_a</option>
+          <option value="weight_b">weight_b</option>
+          <option value="weight_c">weight_c</option>
+          <option value="weight_d">weight_d</option>
+        </select></label>
+        <label>FR <select id="sv-map-fr">
+          <option value="none">– keiner –</option>
+          <option value="weight_a">weight_a</option>
+          <option value="weight_b">weight_b</option>
+          <option value="weight_c">weight_c</option>
+          <option value="weight_d">weight_d</option>
+        </select></label>
 
         <p class="muted">
-          Negative oder fehlende Werte werden stabil behandelt (standard: abs + fehlend=0).
+          Schwerpunkt nutzt nur <b>nicht-negative</b> Gewichte (max(w,0)), damit der Punkt
+          im Bett bleibt (negative Noise macht sonst Ausreißer).
         </p>
       </div>
     </div>
+
+    <div id="sv-meta" class="muted"></div>
   </div>
 
   <script>
@@ -238,9 +208,8 @@
       const loadBtn = document.getElementById('sv-load-btn');
       const playBtn = document.getElementById('sv-play-btn');
       const pauseBtn = document.getElementById('sv-pause-btn');
-      const absToggle = document.getElementById('sv-abs');
-
       const statusSpan = document.getElementById('sv-status');
+      const meta = document.getElementById('sv-meta');
       const square = document.getElementById('sv-square');
       const dot = document.getElementById('sv-dot');
 
@@ -253,7 +222,6 @@
       let currentIndex = 0;
       let timerId = null;
 
-      // default mapping
       mapKL.value = "weight_a";
       mapKR.value = "weight_b";
       mapFL.value = "weight_c";
@@ -270,68 +238,54 @@
         FR: { x:  1, y:  1 },
       };
 
-      function safeWeight(v) {
-        let n = 0;
-        if (typeof v === "number" && isFinite(v)) n = v;
-        if (absToggle.checked) n = Math.abs(n);
-        // Negative/NaN -> 0
-        if (!isFinite(n) || n < 0) n = 0;
-        return n;
-      }
-
-      function clamp(val, min, max) {
-        return Math.max(min, Math.min(max, val));
+      function getWeight(frame, key) {
+        if (!key || key === "none") return 0;
+        const v = frame[key];
+        const n = (typeof v === "number" && isFinite(v)) ? v : 0;
+        return Math.max(n, 0); // <= wichtig: negatives rausfiltern
       }
 
       function computeCenter(frame, mapping) {
-        let sumW = 0;
-        let sumX = 0;
-        let sumY = 0;
+        let sumW = 0, sumX = 0, sumY = 0;
 
         for (const corner of Object.keys(mapping)) {
           const key = mapping[corner];
-          if (!key || key === "none") continue;
-
-          const weight = safeWeight(frame[key]);
-          if (weight <= 0) continue;
-
+          const w = getWeight(frame, key);
+          if (w <= 0) continue;
           const pos = positions[corner];
-          sumW += weight;
-          sumX += weight * pos.x;
-          sumY += weight * pos.y;
+          sumW += w;
+          sumX += w * pos.x;
+          sumY += w * pos.y;
         }
 
         if (sumW <= 0) return { x: 0, y: 0 };
-
-        // Normalerweise bereits in [-1..1], aber wir clampen hart als Safety
-        return {
-          x: clamp(sumX / sumW, -1, 1),
-          y: clamp(sumY / sumW, -1, 1),
-        };
+        return { x: sumX / sumW, y: sumY / sumW };
       }
 
       function renderFrame(idx) {
         if (!frames.length) {
           statusSpan.textContent = "Keine Frames geladen.";
-          dot.style.left = "50%";
-          dot.style.top = "50%";
           return;
         }
-        idx = clamp(idx, 0, frames.length - 1);
-
         const frame = frames[idx];
         const mapping = getMapping();
         const center = computeCenter(frame, mapping);
 
-        const size = square.clientWidth;
+        const size = square.getBoundingClientRect().width;
 
-        const xNorm = (center.x + 1) / 2;
-        const yNorm = (center.y + 1) / 2;
+        // clamp [-1,1]
+        const cx = Math.max(-1, Math.min(1, center.x));
+        const cy = Math.max(-1, Math.min(1, center.y));
+
+        const xNorm = (cx + 1) / 2;
+        const yNorm = (cy + 1) / 2;
 
         dot.style.left = (xNorm * size) + "px";
-        dot.style.top  = (yNorm * size) + "px";
+        dot.style.top = (yNorm * size) + "px";
 
-        statusSpan.textContent = `Frame ${idx + 1}/${frames.length} (t=${frame.timestamp || "?"})`;
+        statusSpan.textContent = `Frame ${idx + 1}/${frames.length}`;
+        meta.textContent =
+          `t=${frame.timestamp || "?"} | a=${frame.weight_a.toFixed(2)} b=${frame.weight_b.toFixed(2)} c=${frame.weight_c.toFixed(2)} d=${frame.weight_d.toFixed(2)}`;
       }
 
       function stopPlayback() {
@@ -345,16 +299,15 @@
         stopPlayback();
         currentIndex = 0;
 
-        const uid = groupSelect.value;
-        if (!uid) {
-          statusSpan.textContent = "Bitte zuerst eine label_uid auswählen.";
+        const gid = groupSelect.value;
+        if (!gid) {
+          statusSpan.textContent = "Bitte zuerst label_uid auswählen.";
           return;
         }
 
         statusSpan.textContent = "Lade Daten ...";
-
         try {
-          const resp = await fetch(`/group_weights?label_uid=${encodeURIComponent(uid)}`);
+          const resp = await fetch(`/group_weights?label_uid=${encodeURIComponent(gid)}`);
           if (!resp.ok) {
             statusSpan.textContent = `Fehler beim Laden (${resp.status})`;
             return;
@@ -362,21 +315,20 @@
           const data = await resp.json();
           frames = data.frames || [];
           if (!frames.length) {
-            statusSpan.textContent = "Keine Frames für diese Gruppe gefunden.";
-            renderFrame(0);
+            statusSpan.textContent = "Keine Frames gefunden.";
             return;
           }
           statusSpan.textContent = `Frames geladen: ${frames.length}`;
-          renderFrame(0);
+          renderFrame(currentIndex);
         } catch (e) {
           console.error(e);
-          statusSpan.textContent = "Fehler beim Laden (siehe Konsole).";
+          statusSpan.textContent = "Fehler beim Laden (Konsole).";
         }
       }
 
       function startPlayback() {
         if (!frames.length) {
-          statusSpan.textContent = "Keine Frames geladen – bitte zuerst 'Laden' klicken.";
+          statusSpan.textContent = "Keine Frames geladen.";
           return;
         }
         if (timerId !== null) return;
@@ -384,17 +336,12 @@
         timerId = setInterval(() => {
           currentIndex = (currentIndex + 1) % frames.length;
           renderFrame(currentIndex);
-        }, 300);
+        }, 500);
       }
 
       loadBtn.addEventListener('click', (e) => { e.preventDefault(); loadGroup(); });
       playBtn.addEventListener('click', (e) => { e.preventDefault(); startPlayback(); });
-      pauseBtn.addEventListener('click', (e) => { e.preventDefault(); stopPlayback(); statusSpan.textContent = "Pause."; });
-
-      // wenn mapping/abs umgestellt wird -> neu rendern
-      [mapKL, mapKR, mapFL, mapFR, absToggle].forEach(el => {
-        el.addEventListener('change', () => renderFrame(currentIndex));
-      });
+      pauseBtn.addEventListener('click', (e) => { e.preventDefault(); stopPlayback(); });
 
       window.addEventListener('load', () => renderFrame(0));
     })();
