@@ -15,7 +15,7 @@ from .models import Base, Measurement, MeasurementGroup
 from .settings import settings
 from .status import status
 from .storage import save_item, save_watch_packet_list
-from .schema import Item, WatchUpload
+from .schema import IncomingItem, WatchUpload
 
 
 app = FastAPI()
