@@ -5,7 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import SessionLocal
-from .models import Measurement, MeasurementGroup
+from .models import Measurement, MeasurementGroup, WatchMeasurement, WatchMeasurementGroup
 from .status import status
 
 BERLIN = ZoneInfo("Europe/Berlin")
