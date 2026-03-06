@@ -66,17 +66,6 @@ class MeasurementGroup(Base):
     # Label zur Übersicht (wie du wolltest)
     label: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-class MeasurementGroup(Base):
-    __tablename__ = "measurement_groups"
-
-    label_uid: Mapped[str] = mapped_column(String(128), primary_key=True)
-
-    # Liste der Measurement-IDs in dieser Gruppe
-    measurement_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False, server_default="{}")
-
-    # Label zur Übersicht (wie du wolltest)
-    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
-
 
 class WatchMeasurementGroup(Base):
     __tablename__ = "watch_measurement_groups"
