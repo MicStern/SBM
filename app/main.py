@@ -14,7 +14,8 @@ from .fetcher import fetch_loop, fetch_theta, build_theta_url
 from .models import Base, Measurement, MeasurementGroup
 from .settings import settings
 from .status import status
-from .storage import save_item
+from .storage import save_item, save_watch_packet_list
+from .schema import Item, WatchUpload
 
 
 app = FastAPI()
@@ -92,6 +93,24 @@ async def startup():
 async def healthz():
     return PlainTextResponse("ok")
 
+@app.post("/watch")
+async def upload_watch(data: WatchUpload):
+    """
+    Upload endpoint for watch recordings.
+    Receives the raw watch packets and stores them in the database.
+    """
+
+    if not data.label_uid:
+        raise HTTPException(status_code=400, detail="label_uid missing")
+
+    if not data.packets:
+        raise HTTPException(status_code=400, detail="no watch packets provided")
+
+    try:
+        await save_watch_packet_list(data.label_uid, data.packets)
+        return {"status": "ok", "stored_packets": len(data.packets)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/status.json")
 async def status_json():
