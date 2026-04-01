@@ -20,7 +20,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # .env wird automatisch eingelesen, zusätzlich hier DB-URL fest verdrahtet:
     env_file:
       - .env.example
     environment:
@@ -28,8 +27,29 @@ services:
     ports:
       - "8000:8000"
     extra_hosts:
-      # feste Zuordnung Hostname -> IP (aus deinem nslookup/ping)
       - "theta-v2-server.5micron.net:104.21.39.45"
+
+  jupyter:
+    build:
+      context: ./notebook
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebook/notebooks:/home/jovyan/work
+      - ./notebook/utils:/home/jovyan/work/utils
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: appdb
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    command: >
+      start-notebook.py
+      --IdentityProvider.token=mein-notebook-token
+      --ServerApp.allow_remote_access=True
 
 volumes:
   dbdata:
