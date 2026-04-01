@@ -307,9 +307,9 @@ async def status_page(request: Request):
         )
 
     return templates.TemplateResponse(
+        request,
         "status.html",
         {
-            "request": request,
             "s": status,
             "queue_size": queue.qsize() if queue else 0,
             "groups": groups,
