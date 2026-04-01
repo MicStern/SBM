@@ -50,6 +50,7 @@ jupyter:
     start-notebook.py
     --IdentityProvider.token=mein-notebook-token
     --ServerApp.allow_remote_access=True
-
+    --ServerApp.root_dir=/home/jovyan/work
+    
 volumes:
   dbdata:
