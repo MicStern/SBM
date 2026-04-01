@@ -37,7 +37,7 @@ services:
         condition: service_healthy
     ports:
       - "8000:8888"
-    user: "${UID}:${GID}"
+    user: "root"
     volumes:
       - ./notebook:/home/jovyan/work
     environment:
@@ -46,11 +46,17 @@ services:
       POSTGRES_DB: appdb
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
+  
+      NB_UID: 1001
+      NB_GID: 100
+      CHOWN_HOME: "yes"
+      CHOWN_HOME_OPTS: "-R"
+      CHOWN_EXTRA: "/home/jovyan/work"
+      CHOWN_EXTRA_OPTS: "-R"
     command: >
       start-notebook.py
       --IdentityProvider.token=mein-notebook-token
       --ServerApp.allow_remote_access=True
-      --ServerApp.root_dir=/home/jovyan/work
     
 volumes:
   dbdata:
