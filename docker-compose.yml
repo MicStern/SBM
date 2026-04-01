@@ -29,27 +29,27 @@ services:
     extra_hosts:
       - "theta-v2-server.5micron.net:104.21.39.45"
 
-  jupyter:
-    build:
-      context: ./notebook
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "8000:8888"
-    volumes:
-      - ./notebook/notebooks:/home/jovyan/work
-      - ./notebook/utils:/home/jovyan/work/utils
-    environment:
-      POSTGRES_HOST: db
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: appdb
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-    command: >
-      start-notebook.py
-      --IdentityProvider.token=mein-notebook-token
-      --ServerApp.allow_remote_access=True
+jupyter:
+  build:
+    context: ./notebook
+  depends_on:
+    db:
+      condition: service_healthy
+  ports:
+    - "8000:8888"
+  user: "${UID}:${GID}"
+  volumes:
+    - ./notebook:/home/jovyan/work
+  environment:
+    POSTGRES_HOST: db
+    POSTGRES_PORT: 5432
+    POSTGRES_DB: appdb
+    POSTGRES_USER: app
+    POSTGRES_PASSWORD: app
+  command: >
+    start-notebook.py
+    --IdentityProvider.token=mein-notebook-token
+    --ServerApp.allow_remote_access=True
 
 volumes:
   dbdata:
