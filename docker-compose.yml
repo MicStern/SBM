@@ -36,7 +36,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8888:8888"
+      - "8001:8888"
     volumes:
       - ./notebook/notebooks:/home/jovyan/work
       - ./notebook/utils:/home/jovyan/work/utils
