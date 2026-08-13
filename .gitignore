@@ -1,1 +1,3 @@
 database_backup/*.sql
+database_backup/*.sql
+**/.ipynb_checkpoints/
